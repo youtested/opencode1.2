@@ -248,7 +248,20 @@ def set_preferred_endpoint(model_id: str, endpoint: str) -> None:
 
 # -- streaming -----------------------------------------------------------
 
-def _check_responses_status(resp: "httpx.Response", name: str) -> None:
+def _hint_for(status: int | None, body: str, model: str = "") -> str:
+    """Plain-language hint for a gateway failure, or '' when we have none.
+
+    Imported lazily so the happy path never pays for difflib + the catalog.
+    """
+    try:
+        from .hints import hint_block
+
+        return hint_block(status, body, model)
+    except Exception:
+        return ""
+
+
+def _check_responses_status(resp: "httpx.Response", name: str, model: str = "") -> None:
     if resp.status_code in (200, 201):
         return
     body = ""
@@ -262,16 +275,28 @@ def _check_responses_status(resp: "httpx.Response", name: str) -> None:
             ra = float(retry_after) if retry_after else None
         except ValueError:
             ra = None
-        raise RateLimitError(f"{name} rate limited (429): {body}", retry_after=ra)
+        msg = f"{name} rate limited (429): {body}"
+        hint = _hint_for(status=resp.status_code, body=body, model=model)
+        if hint:
+            msg += f"\n\n{hint}"
+        raise RateLimitError(msg, retry_after=ra)
     if resp.status_code in _INCOMPATIBLE_STATUS:
+        # Internal signal only: the caller silently tries the other transport,
+        # so a hint here would surface advice for a non-problem.
         raise TransportIncompatible(f"{name}: responses API rejected ({resp.status_code}): {body}")
     if resp.status_code >= 500:
-        raise ProviderError(
-            f"{name} server error ({resp.status_code}): {body}", retryable=True, status=resp.status_code
-        )
+        msg = f"{name} server error ({resp.status_code}): {body}"
+        hint = _hint_for(status=resp.status_code, body=body, model=model)
+        if hint:
+            msg += f"\n\n{hint}"
+        raise ProviderError(msg, retryable=True, status=resp.status_code)
     if _classify_context_overflow(body):
         raise ContextOverflowError(f"{name} context overflow: {body}", status=resp.status_code)
-    raise ProviderError(f"{name} error ({resp.status_code}): {body}", status=resp.status_code)
+    msg = f"{name} error ({resp.status_code}): {body}"
+    hint = _hint_for(status=resp.status_code, body=body, model=model)
+    if hint:
+        msg += f"\n\n{hint}"
+    raise ProviderError(msg, status=resp.status_code)
 
 
 class _FunctionCallSlots:

@@ -335,6 +335,14 @@ def _run_check(cfg: Any, auth: Auth) -> None:
             failed += 1
             detail = info.get("error") or info.get("status") or "?"
             click.echo(f"[FAIL] {pid:<12} {info.get('model', '')} - {detail}")
+            try:
+                from .providers.hints import hint_block as _hint
+
+                _h = _hint(None, detail, info.get("model", ""))
+            except Exception:
+                _h = ""
+            if _h:
+                click.echo("       " + _h.replace("\n", "\n       "))
     click.echo(f"\n{len(results) - failed}/{len(results)} providers OK")
     # Live free-tier probe: the /models ping above cannot see Zen's client
     # fingerprint gate (UA version, session shape, signature content), so a

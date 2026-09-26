@@ -76,6 +76,21 @@ def _content_to_text(content: Any) -> str:
     return str(content)
 
 
+def _hint_for(provider: object, status: int | None, body: str) -> str:
+    """Plain-language hint for a gateway failure, or '' when we have none.
+
+    Imported lazily: this sits on the error path of every request, and the
+    hint module pulls in difflib + the model catalog, which no happy path
+    should pay for.
+    """
+    try:
+        from .hints import hint_block
+
+        return hint_block(status, body, str(getattr(provider, "model", "") or ""))
+    except Exception:
+        return ""
+
+
 def _is_context_overflow_message(message: str) -> bool:
     """True when a provider error means the history overflowed the window.
 
@@ -358,14 +373,24 @@ class OpenAICompatProvider:
                 ra = float(retry_after) if retry_after else None
             except ValueError:
                 ra = None
-            raise RateLimitError(f"{self.name} rate limited (429): {body}", retry_after=ra)
+            msg = f"{self.name} rate limited (429): {body}"
+            hint = _hint_for(self, resp.status_code, body)
+            if hint:
+                msg += f"\n\n{hint}"
+            raise RateLimitError(msg, retry_after=ra)
         if resp.status_code >= 500:
-            raise ProviderError(
-                f"{self.name} server error ({resp.status_code}): {body}", retryable=True, status=resp.status_code
-            )
+            msg = f"{self.name} server error ({resp.status_code}): {body}"
+            hint = _hint_for(self, resp.status_code, body)
+            if hint:
+                msg += f"\n\n{hint}"
+            raise ProviderError(msg, retryable=True, status=resp.status_code)
         if _is_context_overflow_message(body):
             raise ContextOverflowError(f"{self.name} context overflow: {body}", status=resp.status_code)
-        raise ProviderError(f"{self.name} error ({resp.status_code}): {body}", status=resp.status_code)
+        msg = f"{self.name} error ({resp.status_code}): {body}"
+        hint = _hint_for(self, resp.status_code, body)
+        if hint:
+            msg += f"\n\n{hint}"
+        raise ProviderError(msg, status=resp.status_code)
 
     def _handle_event(
         self,
