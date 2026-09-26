@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>OpenCode</title>
+  <style>
+    :root { color-scheme: dark; --bg:#101216; --panel:#191c22; --line:#2b3039; --text:#edf0f4; --muted:#9aa3af; --accent:#78a9ff; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--text); font:15px/1.45 system-ui,-apple-system,sans-serif; }
+    header { display:flex; gap:10px; align-items:center; padding:12px 14px; border-bottom:1px solid var(--line); position:sticky; top:0; background:var(--bg); z-index:2; }
+    header h1 { font-size:18px; margin:0 auto 0 0; }
+    button,input,textarea { font:inherit; }
+    button { border:1px solid var(--line); border-radius:8px; padding:8px 11px; background:var(--panel); color:var(--text); }
+    button:hover { border-color:var(--accent); }
+    button.primary { background:#24518f; border-color:#3974c4; }
+    input,textarea { width:100%; border:1px solid var(--line); border-radius:8px; background:#0c0e11; color:var(--text); padding:9px 10px; }
+    .layout { display:grid; grid-template-columns:240px 1fr; min-height:calc(100vh - 58px); }
+    aside { border-right:1px solid var(--line); padding:10px; display:flex; flex-direction:column; gap:8px; }
+    #sessions { overflow:auto; display:flex; flex-direction:column; gap:5px; }
+    .session { text-align:left; width:100%; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .session.active { border-color:var(--accent); background:#203858; }
+    main { min-width:0; display:flex; flex-direction:column; }
+    #status { color:var(--muted); min-height:24px; padding:6px 14px; }
+    #messages { flex:1; overflow:auto; padding:14px; display:flex; flex-direction:column; gap:10px; }
+    .message { max-width:900px; width:100%; margin:auto; border:1px solid var(--line); border-radius:10px; padding:10px 12px; white-space:pre-wrap; overflow-wrap:anywhere; background:var(--panel); }
+    .message.user { background:#1d3049; }
+    .message .role { color:var(--muted); font-size:12px; margin-bottom:4px; }
+    .message .body { white-space:pre-wrap; }
+    .empty { color:var(--muted); text-align:center; margin:auto; max-width:520px; }
+    form { display:flex; gap:8px; padding:10px 14px calc(10px + env(safe-area-inset-bottom)); border-top:1px solid var(--line); }
+    form textarea { resize:none; min-height:46px; max-height:150px; }
+    form button { align-self:stretch; }
+    #auth { display:none; padding:10px 14px; gap:8px; border-bottom:1px solid var(--line); background:#1b2028; }
+    #auth.show { display:flex; }
+    #auth input { flex:1; min-width:0; }
+    #notice { color:#ffb4a8; padding:0 14px; }
+    @media (max-width:700px) { .layout { grid-template-columns:1fr; } aside { border-right:0; border-bottom:1px solid var(--line); max-height:150px; } #sessions { display:grid; grid-template-columns:1fr 1fr; } form { flex-direction:column; } form button { align-self:flex-end; } }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>OpenCode</h1>
+    <button id="newSession">New</button>
+    <button id="abort">Stop</button>
+    <button id="showToken">Token</button>
+  </header>
+  <div id="auth">
+    <input id="token" type="password" autocomplete="off" placeholder="Server token">
+    <button id="saveToken">Connect</button>
+  </div>
+  <div class="layout">
+    <aside>
+      <div id="sessions"></div>
+    </aside>
+    <main>
+      <div id="status">Not connected</div>
+      <div id="notice"></div>
+      <div id="messages"><div class="empty">Create or select a session to begin.</div></div>
+      <form id="promptForm">
+        <textarea id="prompt" placeholder="Ask the coding agent..." maxlength="262144"></textarea>
+        <button class="primary" type="submit">Send</button>
+      </form>
+    </main>
+  </div>
+  <script>
+    const state = { token: localStorage.getItem('opencode_token') || '', sessionId: '', cursor: 0, active: false, controller: null, streamText: '' };
+    const $ = id => document.getElementById(id);
+    const fragment = new URLSearchParams(location.hash.slice(1));
+    if (fragment.get('token')) { state.token = fragment.get('token'); localStorage.setItem('opencode_token', state.token); history.replaceState(null, '', location.pathname); }
+    if (state.token) $('token').value = state.token;
+
+    function setStatus(text) { $('status').textContent = text; }
+    function showNotice(text) { $('notice').textContent = text || ''; }
+    function showToken() { $('auth').classList.toggle('show'); $('token').focus(); }
+    function saveToken() { state.token = $('token').value.trim(); localStorage.setItem('opencode_token', state.token); $('auth').classList.remove('show'); boot(); }
+    function textOf(value) { if (typeof value === 'string') return value; if (Array.isArray(value)) return value.map(textOf).filter(Boolean).join('\n'); if (value && typeof value === 'object') return JSON.stringify(value, null, 2); return ''; }
+    function renderMessages(messages) {
+      const box = $('messages'); box.replaceChildren();
+      if (!messages || !messages.length) { const empty = document.createElement('div'); empty.className = 'empty'; empty.textContent = 'No messages yet.'; box.append(empty); return; }
+      for (const message of messages) { const card = document.createElement('article'); card.className = 'message ' + (message.role === 'user' ? 'user' : ''); const role = document.createElement('div'); role.className = 'role'; role.textContent = message.role || 'assistant'; const body = document.createElement('div'); body.className = 'body'; body.textContent = textOf(message.content); card.append(role, body); box.append(card); }
+      box.scrollTop = box.scrollHeight;
+    }
+    function renderSessions(sessions) {
+      const box = $('sessions'); box.replaceChildren();
+      for (const session of sessions) { const button = document.createElement('button'); button.className = 'session' + (session.id === state.sessionId ? ' active' : ''); button.textContent = session.title || session.id; button.title = session.id; button.onclick = () => selectSession(session.id); box.append(button); }
+    }
+    async function api(path, options = {}) {
+      const headers = Object.assign({ 'Accept': 'application/json' }, options.headers || {});
+      if (state.token) headers['Authorization'] = 'Bearer ' + state.token;
+      if (options.body && typeof options.body !== 'string') { headers['Content-Type'] = 'application/json'; options.body = JSON.stringify(options.body); }
+      const response = await fetch('/api/v1/' + path, Object.assign({}, options, { headers }));
+      const text = await response.text(); let data = {}; try { data = text ? JSON.parse(text) : {}; } catch (_) { data = { error: text }; }
+      if (!response.ok) { if (response.status === 401) $('auth').classList.add('show'); throw new Error(data.error || response.statusText); }
+      return data;
+    }
+    async function refreshSessions() { const data = await api('sessions'); renderSessions(data.sessions || []); return data.sessions || []; }
+    async function createSession() { const data = await api('sessions', { method: 'POST', body: { title: 'new session' } }); await refreshSessions(); await selectSession(data.id); }
+    async function selectSession(id) {
+      if (state.controller) state.controller.abort();
+      state.sessionId = id; const data = await api('sessions/' + encodeURIComponent(id)); state.cursor = Number(data.runtime && data.runtime.event_cursor) || 0; state.active = Boolean(data.runtime && data.runtime.active); renderMessages(data.messages || []); await refreshSessions(); if (state.active) streamSession();
+    }
+    function addStreamText(delta) { state.streamText += delta || ''; let card = $('messages').querySelector('.stream-card'); if (!card) { card = document.createElement('article'); card.className = 'message stream-card'; const role = document.createElement('div'); role.className = 'role'; role.textContent = 'assistant · live'; const body = document.createElement('div'); body.className = 'body'; card.append(role, body); $('messages').append(card); } card.querySelector('.body').textContent = state.streamText; $('messages').scrollTop = $('messages').scrollHeight; }
+    function handleEvent(event) {
+      state.cursor = Math.max(state.cursor, Number(event.seq) || 0); const kind = event.kind;
+      if (kind === 'text_delta') addStreamText(event.text);
+      else if (kind === 'turn_started') { state.streamText = ''; setStatus('Working...'); }
+      else if (kind === 'turn_complete' || kind === 'turn_error') { state.active = false; state.streamText = ''; setStatus(kind === 'turn_error' ? 'Turn failed' : 'Ready'); if (kind === 'turn_error') showNotice(event.error || 'Turn failed'); selectSession(state.sessionId).catch(() => {}); }
+      else if (kind === 'error') showNotice(event.error || 'Agent error');
+      else if (kind === 'retry' || kind === 'notice') setStatus(event.message || event.text || 'Working...');
+      else if (kind === 'tool_call' || kind === 'tool_start' || kind === 'tool_end') setStatus(kind + (event.tool ? ': ' + event.tool : ''));
+    }
+    async function streamSession() {
+      if (!state.sessionId || !state.token) return;
+      const controller = new AbortController(); state.controller = controller;
+      try {
+        const response = await fetch('/api/v1/sessions/' + encodeURIComponent(state.sessionId) + '/events?after=' + state.cursor, { headers: { 'Accept': 'text/event-stream', 'Authorization': 'Bearer ' + state.token }, signal: controller.signal });
+        if (!response.ok) throw new Error('event stream failed');
+        const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = '';
+        while (true) { const part = await reader.read(); if (part.done) break; buffer += decoder.decode(part.value, { stream: true }); let split; while ((split = buffer.indexOf('\n\n')) >= 0) { const block = buffer.slice(0, split); buffer = buffer.slice(split + 2); for (const line of block.split('\n')) if (line.startsWith('data:')) handleEvent(JSON.parse(line.slice(5).trim())); } }
+      } catch (error) { if (error.name !== 'AbortError') setStatus('Disconnected'); }
+    }
+    async function sendPrompt(event) { event.preventDefault(); const content = $('prompt').value.trim(); if (!content || !state.sessionId) { showNotice(state.sessionId ? 'Enter a message.' : 'Select a session first.'); return; } $('prompt').value = ''; try { await api('sessions/' + encodeURIComponent(state.sessionId) + '/messages', { method: 'POST', body: { content } }); state.active = true; if (!state.controller) streamSession(); } catch (error) { showNotice(error.message); } }
+    async function abortTurn() { if (!state.sessionId) return; try { await api('sessions/' + encodeURIComponent(state.sessionId) + '/abort', { method: 'POST', body: {} }); } catch (error) { showNotice(error.message); } }
+    async function boot() { if (!state.token) { setStatus('Enter server token'); $('auth').classList.add('show'); return; } try { const info = await api('info'); setStatus('Connected · ' + info.directory); const sessions = await refreshSessions(); if (sessions.length) await selectSession(sessions[0].id); } catch (error) { setStatus('Connection failed'); showNotice(error.message); } }
+    $('showToken').onclick = showToken; $('saveToken').onclick = saveToken; $('newSession').onclick = () => createSession().catch(error => showNotice(error.message)); $('abort').onclick = abortTurn; $('promptForm').onsubmit = sendPrompt; $('token').addEventListener('keydown', event => { if (event.key === 'Enter') saveToken(); }); boot();
+  </script>
+</body>
+</html>

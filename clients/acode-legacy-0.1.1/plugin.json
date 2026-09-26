@@ -1,0 +1,29 @@
+{
+  "$schema": "https://acode.app/schema/plugin/v0.1.0.json",
+  "id": "com.opencode.py.agent",
+  "name": "OpenCode Agent",
+  "main": "main.js",
+  "version": "0.1.22",
+  "readme": "readme.md",
+  "changelogs": "changelogs.md",
+  "icon": "icon.png",
+  "files": [
+    "main.js",
+    "bridge.js",
+    "readme.md",
+    "changelogs.md",
+    "icon.png"
+  ],
+  "minVersionCode": 290,
+  "license": "MIT",
+  "keywords": [
+    "ai",
+    "agent",
+    "opencode"
+  ],
+  "price": 0,
+  "permissions": [],
+  "author": {
+    "name": "opencode_py"
+  }
+}

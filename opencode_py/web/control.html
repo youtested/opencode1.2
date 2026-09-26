@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>OpenCode Server Control</title>
+  <style>
+    :root{color-scheme:dark;--bg:#0f1115;--panel:#191c23;--line:#303640;--text:#f2f4f7;--muted:#a4adba;--accent:#78a9ff}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--text);font:15px system-ui,sans-serif}.card{width:min(420px,calc(100% - 28px));padding:22px;border:1px solid var(--line);border-radius:14px;background:var(--panel);box-shadow:0 16px 50px #0008}.card h1{font-size:21px;margin:0 0 6px}.muted{color:var(--muted);font-size:13px}.state{display:flex;align-items:center;justify-content:space-between;margin:22px 0;padding:14px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}.state strong{font-size:18px}.switch{display:flex;align-items:center;gap:9px;cursor:pointer}.switch input{width:48px;height:26px;accent-color:var(--accent)}button,input{font:inherit}input{width:100%;margin-top:8px;padding:10px;border:1px solid var(--line);border-radius:8px;background:#0b0d10;color:var(--text)}button{width:100%;margin-top:12px;padding:10px;border:0;border-radius:8px;background:#24518f;color:#fff;font-weight:600}.notice{min-height:20px;margin-top:12px;color:var(--muted);font-size:13px}.modal{position:fixed;inset:0;display:none;place-items:center;padding:18px;background:#000b;z-index:2}.modal.show{display:grid}.modal-card{width:min(420px,100%);padding:20px;border:1px solid var(--line);border-radius:12px;background:var(--panel)}.modal-card h2{margin:0 0 8px}.modal-card p{color:var(--muted)}.token-row{display:flex;gap:7px}.token-row input{min-width:0;flex:1}.token-row button{width:auto;margin:0;white-space:nowrap}</style>
+</head>
+<body>
+  <main class="card">
+    <h1>OpenCode Server</h1>
+    <div class="muted">One global switch for every client.</div>
+    <div class="state"><strong id="state">Checking...</strong><label class="switch"><span>ON/OFF</span><input id="toggle" type="checkbox" aria-label="Server on or off"></label></div>
+    <div id="url" class="muted"></div>
+    <div id="notice" class="notice"></div>
+    <div id="auth"><input id="token" type="password" placeholder="Control token"><button id="saveToken">Connect control service</button></div>
+  </main>
+  <div id="modal" class="modal"><div class="modal-card"><h2 id="modalTitle"></h2><p id="modalMessage"></p><div id="tokenRow" class="token-row"><input id="modalToken" readonly><button id="copyToken">Copy token</button></div><button id="closeModal">Close</button></div></div>
+  <script>
+    const state={token:localStorage.getItem('opencode_control_token')||''};
+    const $=id=>document.getElementById(id);
+    const hash=new URLSearchParams(location.hash.slice(1));if(hash.get('token')){state.token=hash.get('token');localStorage.setItem('opencode_control_token',state.token);history.replaceState(null,'',location.pathname)}$('token').value=state.token;
+    async function api(path,options={}){const headers=Object.assign({'Accept':'application/json','Authorization':'Bearer '+state.token},options.headers||{});if(options.body&&typeof options.body!=='string'){headers['Content-Type']='application/json';options.body=JSON.stringify(options.body)}const response=await fetch('/api/v1/control/'+path,Object.assign({},options,{headers}));const text=await response.text();let data={};try{data=text?JSON.parse(text):{}}catch(_){data={error:text}}if(!response.ok)throw new Error(data.error||response.statusText);return data}
+    function showModal(title,message,token){ $('modalTitle').textContent=title;$('modalMessage').textContent=message;$('modalToken').value=token||'';$('tokenRow').style.display=token?'flex':'none';$('copyToken').textContent='Copy token';$('copyToken').onclick=async()=>{try{if(navigator.clipboard)navigator.clipboard.writeText($('modalToken').value);$('copyToken').textContent='Copied'}catch(_){$('copyToken').textContent='Select and copy'}};$('modal').classList.add('show')}
+    $('closeModal').onclick=()=>$('modal').classList.remove('show');
+    async function refresh(){try{const data=await api('status');$('state').textContent=data.running?'ON':'OFF';$('toggle').checked=Boolean(data.running);$('url').textContent=data.url||data.control_url||'';$('auth').style.display='block';$('notice').textContent=data.coding_directory||''}catch(error){$('state').textContent='OFF';$('toggle').checked=false;$('auth').style.display='block';$('notice').textContent=error.message}}
+    async function toggle(){try{const data=await api('toggle',{method:'POST',body:{}});$('state').textContent=data.running?'ON':'OFF';$('toggle').checked=Boolean(data.running);if(data.running)showModal('Server Started','Copy the coding-server token for other clients.',data.token||'');else showModal('Server Stopped','The OpenCode coding server is stopped.','');await refresh()}catch(error){$('notice').textContent=error.message}}
+    $('toggle').onchange=toggle;$('saveToken').onclick=()=>{state.token=$('token').value.trim();localStorage.setItem('opencode_control_token',state.token);refresh()};if(state.token)refresh();else $('auth').style.display='block';setInterval(refresh,5000);
+  </script>
+</body>
+</html>
