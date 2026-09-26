@@ -183,12 +183,14 @@ Tool output is capped (`tool_output.max_lines/max_bytes`); disable any tool with
 
 ## Slash commands
 
+All 27 commands, exactly as typed. There are no short aliases — `/new`, not
+`/clear`; `/skills`, not `/skill`; `/exit`, not `/quit`.
+
 ```
-/help  /new (/clear)  /models  /model  /connect  /permissions  /config
-/theme  /agent  /thinking  /undo  /compact (/summarize)  /init  /review
-/mcp  /skills (/skill)  /plugins  /commands (/cmds)  /setting
-/server  /pin  /cleanup  /sessions (/ls)  /export (/save)
-/resume (/continue)  /exit (/quit)
+/agent  /cleanup  /commands  /compact  /config  /connect  /exit
+/export  /help  /init  /mcp  /model  /models  /new  /permissions
+/pin  /plugins  /resume  /review  /server  /sessions  /setting
+/skills  /theme  /thinking  /undo
 ```
 
 ### Themes
@@ -394,6 +396,14 @@ opencode_py/
   tools/           34 builtins + registry, plugins, MCP client
     tools/browser.py  phone-Chrome driver (CDP: status/connect/open/tabs/goto/
                       snapshot/click/type/press/scroll/wait/screenshot/js/close)
+    tools/phone.py    whole-phone driver (adb: status/tap/swipe/type/key/
+                      app_open/app_list/screen/ui/watch/focused/shell).
+                      `watch` is for polling loops: it hashes the screen
+                      STRUCTURE (ignores text, so a clock or spinner does not
+                      look like a change) and answers "unchanged" in ~10 bytes
+                      instead of re-sending a dump + PNG every round. Pass
+                      shot=true to also get a screenshot, max_elements=5..80
+                      to cap the report.
   tui/             Textual app, chat, pickers, dialogs, theme editor
   index/           code indexer (find_symbols backend)
   util/            diff, sse, truncate, net, markdown, gitignore

@@ -36,9 +36,10 @@ _ACTIONS = (
     "focused",
     "shell",
     "ui",
+    "watch",
 )
 
-READONLY_ACTIONS = ("status", "screen", "focused", "app_list", "ui")
+READONLY_ACTIONS = ("status", "screen", "focused", "app_list", "ui", "watch")
 
 _KEY_ALIASES = {
     "back": "KEYCODE_BACK",
@@ -119,6 +120,44 @@ def _num(value: Any, name: str, lo: int, hi: int) -> int:
     if not lo <= n <= hi:
         raise ValueError(f"{name} out of range ({lo}-{hi})")
     return n
+
+
+# Watch mode: cheap change detection between looks. The model polls `watch`
+# instead of `screen`/`ui` in a loop — an identical screen costs ~30 bytes
+# ("unchanged") instead of a full dump + PNG every round. State persists in a
+# small file (not just RAM) so separate tool calls share memory.
+def _watch_path() -> object:
+    try:
+        d = GPath.data / "watch"
+        d.mkdir(parents=True, exist_ok=True)
+        return d / "state.json"
+    except Exception:
+        return None
+
+
+def _watch_load() -> dict:
+    try:
+        p = _watch_path()
+        if p is not None and p.exists():
+            import json as _js
+
+            data = _js.loads(p.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+    except Exception:
+        pass
+    return {}
+
+
+def _watch_save(state: dict) -> None:
+    try:
+        p = _watch_path()
+        if p is not None:
+            import json as _js
+
+            p.write_text(_js.dumps(state)[:4000], encoding="utf-8")
+    except Exception:
+        pass
 
 
 def run(input: dict) -> dict:
@@ -369,6 +408,88 @@ def run(input: dict) -> dict:
         header = f"{seen} element(s). Tap with tap x/y."
         return {"output": header + "\n" + "\n".join(lines), "metadata": {"elements": seen}}
 
+    if action == "watch":
+        # One cheap look that reports ONLY what changed since the last
+        # watch/ui call. Identical screen -> "unchanged" (~30 bytes, no PNG,
+        # no XML in the reply). Changed screen -> the new element lines, plus
+        # a screenshot only when `shot=true` (custom renderers draw nothing
+        # into the XML, so pixels are the only way to see them).
+        # The digest hashes the raw XML structure (classes + bounds + ids),
+        # not the text: a clock or a spinner changes text every frame and
+        # would make every poll look "changed".
+        import hashlib as _hl
+
+        want_shot = bool(input.get("shot"))
+        max_el = input.get("max_elements", 30)
+        try:
+            max_el = max(5, min(80, int(max_el)))
+        except (TypeError, ValueError):
+            max_el = 30
+        ok, dev = _device_ok()
+        if not ok:
+            return {"output": dev, "error": True}
+        ok2, out = _run_adb(["shell", "uiautomator", "dump", "/sdcard/opencode_ui.xml"])
+        if not ok2:
+            return {"output": f"ui dump failed: {out}", "error": True}
+        ok3, xml = _run_adb(["shell", "cat", "/sdcard/opencode_ui.xml"], timeout=30.0)
+        _run_adb(["shell", "rm", "/sdcard/opencode_ui.xml"])
+        if not ok3 or not xml:
+            return {"output": "ui dump empty (try screen instead)", "error": True}
+        import re as _re
+
+        struct_pat = _re.compile(
+            r'<node[^>]*resource-id="([^"]*)"[^>]*class="([^"]*)"[^>]*bounds="(\[[^]]+\]\[[^]]+\])"'
+        )
+        struct = "|".join(f"{c}@{b}" for _r, c, b in struct_pat.findall(xml))
+        digest = _hl.sha1(struct.encode("utf-8", "ignore")).hexdigest()[:16]
+        state = _watch_load()
+        if digest == state.get("ui_hash") and not want_shot:
+            return {"output": "unchanged", "metadata": {"changed": False}}
+
+        pat = _re.compile(
+            r'<node[^>]*text="([^"]*)"[^>]*resource-id="([^"]*)"[^>]*'
+            r'class="([^"]*)"[^>]*content-desc="([^"]*)"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"'
+        )
+        prev = str(state.get("ui_text") or "").splitlines()
+        prev_set = set(prev)
+        lines = []
+        seen = 0
+        for m in pat.finditer(xml):
+            text, rid, cls, desc, x1, y1, x2, y2 = m.groups()
+            label = text or desc or (rid.split("/")[-1].replace("_", " ") if "/" in rid else "")
+            if not label.strip():
+                continue
+            cx, cy = (int(x1) + int(x2)) // 2, (int(y1) + int(y2)) // 2
+            short_cls = cls.split(".")[-1]
+            lines.append(f"[{seen}] {label[:60]!r} <{short_cls}> @ {cx},{cy}")
+            seen += 1
+            if seen >= max_el:
+                break
+        full_text = "\n".join(lines)
+        new_lines = [ln for ln in lines if ln not in prev_set]
+        state["ui_hash"] = digest
+        state["ui_text"] = full_text
+        state["shots"] = int(state.get("shots") or 0)
+        _watch_save(state)
+        if not lines:
+            return {
+                "output": "changed:\n(empty screen or custom renderer — try screen/tap by coords)",
+                "metadata": {"changed": True},
+            }
+        if new_lines or want_shot:
+            head = f"changed ({len(new_lines)} new line(s)):" if new_lines else "changed:"
+            out = head + "\n" + "\n".join(new_lines or lines)
+            meta: dict[str, object] = {"changed": True}
+            if want_shot:
+                shot = run({"action": "screen"})
+                if not shot.get("error"):
+                    meta.update(shot.get("metadata") or {})
+                    out += f"\nshot: {shot.get('metadata', {}).get('path', 'saved')}"
+                    state["shots"] = int(state.get("shots") or 0) + 1
+                    _watch_save(state)
+            return {"output": out, "metadata": meta}
+        return {"output": "unchanged", "metadata": {"changed": False}}
+
     return {"output": f"Unhandled action {action!r}", "error": True}
 
 
@@ -377,6 +498,7 @@ def tool() -> Tool:
         "Drive the WHOLE phone via adb: status, tap x/y, swipe, type text, "
         "key (back/home/recent/enter/...), app_open/app_list, screen "
         "(screenshot), ui (text layout, works when screenshots blocked), "
+        "watch (cheap change-only look, for loops: 'unchanged' when idle), "
         "focused, shell (read-only adb). Coordinates are raw "
         "screen pixels (see status). Ask before passwords/payments."
     )
@@ -390,8 +512,17 @@ def tool() -> Tool:
                     "type": "string",
                     "enum": list(_ACTIONS),
                     "description": "status, tap, swipe, type, key, app_open, "
-                                   "app_list, screen, ui, focused, shell",
+                                   "app_list, screen, ui, watch, focused, shell",
                 },
+                "shot": {"type": "boolean",
+                         "description": "watch only: also return a screenshot "
+                                        "when the screen changed (needed for "
+                                        "custom renderers that draw no text)",
+                         "optional": True},
+                "max_elements": {"type": "integer",
+                                 "description": "watch only: cap on reported "
+                                                "elements (5-80, default 30)",
+                                 "optional": True},
                 "x": {"type": "integer", "description": "Tap X / swipe center X",
                       "optional": True},
                 "y": {"type": "integer", "description": "Tap Y / swipe center Y",
