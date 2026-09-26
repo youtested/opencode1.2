@@ -131,7 +131,7 @@ Custom OpenAI-compatible endpoints work too:
 - Switch with `/agent`, `Tab`, or `Ctrl+T`. Sub-agents via the `task` tool run
   in their own sessions (parallelizable, depth-bounded by `subagent_depth`).
 
-## Tools (26 builtins)
+## Tools (34 builtins)
 
 File & shell: `bash`, `read`, `write`, `edit`, `apply_patch`, `background_task`.
 Search & navigate: `lsp` (first for code), `glob`, `grep`, `find_symbols`, `summarize_file`, `history_search`.
@@ -184,11 +184,42 @@ Tool output is capped (`tool_output.max_lines/max_bytes`); disable any tool with
 ## Slash commands
 
 ```
-/help  /new (/clear)  /models  /connect  /permissions  /config  /theme
-/resume (/continue)  /sessions (/ls)  /export (/save)  /agent  /model
-/thinking  /undo  /compact (/summarize)  /init  /review
-/mcp  /skills (/skill)  /exit (/quit)
+/help  /new (/clear)  /models  /model  /connect  /permissions  /config
+/theme  /agent  /thinking  /undo  /compact (/summarize)  /init  /review
+/mcp  /skills (/skill)  /plugins  /commands (/cmds)  /setting
+/server  /pin  /cleanup  /sessions (/ls)  /export (/save)
+/resume (/continue)  /exit (/quit)
 ```
+
+### Themes
+
+`/theme` opens an arrow-navigable picker (16 built-in palettes, dark first).
+Its footer buttons manage **your own** themes:
+
+| Button | What it does |
+|---|---|
+| **+ New** | Create a theme: a name field plus `#rrggbb` rows. `fab283`, `#fab283` and short `#fab` all work. A live preview renders a full TUI mock — chat, tools, syntax, markdown, diff, agent badges — as you type. |
+| **Edit** | Reopen a custom theme in the same editor. Built-ins cannot be edited. |
+| **Rename** | Change a custom theme's name. |
+| **Delete** | Remove a custom theme after a confirmation. If it was active, the app falls back to `opencode`. |
+
+Custom themes live under `custom_themes` in `opencode.json`, load
+automatically at startup, and are listed first in the picker tagged
+`(custom)`. Invalid names, clashes with built-in names, and non-`#rrggbb`
+values are dropped on load instead of breaking startup.
+
+### Skills
+
+`/skills` (or `/skill`) opens a manager over your `SKILL.md` files:
+
+| Action | How |
+|---|---|
+| View / edit | **Enter** on a row opens the editor (description + body); Save rewrites `SKILL.md` in place |
+| Add | The **＋ Add skill** row, or the Add button — creates `.opencode/skills/<name>/SKILL.md` |
+| Rename | **Ctrl+N** — moves the directory and rewrites the frontmatter name |
+| Delete | **Ctrl+D**, after a confirmation |
+
+`/skills reload` and `/skills validate` still run inline as plain text.
 
 - `/undo` reverts the last `edit`/`write` (20 snapshots kept).
 - `/config validate` checks provider/rotation/permission values.
@@ -360,15 +391,18 @@ opencode_py/
   globals.py       XDG paths, worktree discovery
   providers/       zen, openai_compat, anthropic, ollama, rotation/failover, catalog
   agent/           loop, system prompt, messages, tool-call parsing, compaction
-  tools/           26 builtins + registry, plugins, MCP client
+  tools/           34 builtins + registry, plugins, MCP client
     tools/browser.py  phone-Chrome driver (CDP: status/connect/open/tabs/goto/
                       snapshot/click/type/press/scroll/wait/screenshot/js/close)
-  tui/             Textual app, chat, pickers, dialogs, themes
+  tui/             Textual app, chat, pickers, dialogs, theme editor
   index/           code indexer (find_symbols backend)
   util/            diff, sse, truncate, net, markdown, gitignore
-tests/             fast suite (20 files, 351 tests) + parked slow/niche (16 files, 310 tests)
+tests/             51 test files, 474 tests
+clients/           acode editor plugin — a separate product, not used by the agent
 opencode.json.example  starter config
 ```
+
+116 Python modules: ~55k lines of source plus ~8.7k lines of tests.
 
 ## License
 
