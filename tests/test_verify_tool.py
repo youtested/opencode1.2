@@ -92,14 +92,23 @@ def test_write_tracks_and_green_check_clears(tmp_path):
     assert tracked() == []
 
 
-def test_edit_failure_keeps_list_for_retry(tmp_path, monkeypatch):
+def test_refused_edit_keeps_list_for_retry(tmp_path, monkeypatch):
+    """A failing verify must NOT clear the tracker — the retry loop needs it.
+
+    The broken replacement is produced with force=True on purpose: the edit tool
+    now refuses an edit that would break the file, so the interesting case for
+    the verify loop is a broken file that really did land on disk.
+    """
     monkeypatch.chdir(tmp_path)
     from opencode_py.tools.edit import _edit
 
     f = tmp_path / "mod.py"
     f.write_text("value = 1\n", encoding="utf-8")
-    r = _edit(str(f), "value = 1", "value = (\n")  # broken replacement
-    assert r.get("error") is not True  # edit itself succeeded (writes broken code!)
+    r = _edit(str(f), "value = 1", "value = (\n", force=True)  # broken, forced
+    assert r.get("error") is not True  # the edit itself succeeded
+    # ...and really wrote broken code (the replacement's own newline, plus the
+    # one that was already in the file)
+    assert f.read_text() == "value = (\n\n"
     res = _run(action="check")
     assert res["error"] is True
     # failing run must NOT clear the tracker — retry loop needs it
@@ -110,6 +119,21 @@ def test_edit_failure_keeps_list_for_retry(tmp_path, monkeypatch):
     assert r2.get("error") is not True
     res2 = _run(action="check")
     assert res2.get("error") is not True
+    assert tracked() == []
+
+
+def test_refused_edit_is_not_tracked(tmp_path, monkeypatch):
+    """Nothing was written, so the verify loop must not treat it as pending."""
+    monkeypatch.chdir(tmp_path)
+    from opencode_py.tools.edit import _edit
+
+    f = tmp_path / "mod2.py"
+    f.write_text("value = 1\n", encoding="utf-8")
+    _clear_tracked()
+    r = _edit(str(f), "value = 1", "value = (\n")
+    assert r.get("error") is True
+    assert "Refused" in r["output"]
+    assert f.read_text() == "value = 1\n"  # untouched
     assert tracked() == []
 
 

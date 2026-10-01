@@ -22,6 +22,7 @@ from .globals import resolve_worktree
 MAX_BODY_BYTES = 2 * 1024 * 1024
 MAX_PROMPT_CHARS = 256 * 1024
 MAX_EVENTS = 500
+MODELS_TTL_SECONDS = 300.0
 
 
 def _jsonable(value: Any) -> Any:
@@ -259,6 +260,10 @@ class ServerState:
         self._closed = False
         self.httpd: Any = None
         self._web_html: bytes | None = None
+        self.ide_lock = threading.Lock()
+        self.ide_context: dict[str, Any] = {}
+        self.ide_action: dict[str, Any] = {}
+        self._models_cache: tuple[float, dict[str, Any]] | None = None
 
     @property
     def closed(self) -> bool:
@@ -352,14 +357,27 @@ class ServerState:
             session.agent = self.cfg.default_agent
         return self._attach(session)
 
-    def list_sessions(self) -> list[dict[str, Any]]:
+    def list_sessions(self, scope: str = "directory") -> list[dict[str, Any]]:
+        """Sessions for the clients.
+
+        ``scope="all"`` mirrors the TUI session list: every session on disk
+        across projects, so web clients show the same rows the TUI does (the
+        TUI lists cross-project on purpose, see tui/app.py). Those rows carry
+        ``foreign: true`` when they belong to another project. The default
+        stays directory-scoped so the SDK contract does not change.
+        """
+        cross = str(scope).lower() in ("all", "global", "tui")
+        directory = str(self.directory)
         out: list[dict[str, Any]] = []
         seen: set[str] = set()
-        for session in self.session_store.list_sessions(str(self.directory)):
+        for session in self.session_store.list_sessions(None if cross else directory):
             if session.id in seen:
                 continue
             seen.add(session.id)
-            out.append(self._summary(session))
+            item = self._summary(session)
+            if cross:
+                item["foreign"] = str(item.get("directory") or "") != directory
+            out.append(item)
         with self._lock:
             runtimes = list(self._sessions.values())
         for runtime in runtimes:
@@ -371,7 +389,113 @@ class ServerState:
             else:
                 out.insert(0, runtime.payload(include_messages=False))
                 seen.add(runtime.session.id)
+        if cross:
+            out.sort(key=lambda item: float(item.get("created") or 0.0), reverse=True)
         return out
+
+    def rename_session(self, session_id: str, title: str) -> dict[str, Any]:
+        """Rename a session (PATCH). Same persistence rule as the TUI rename
+        dialog: a title only reaches disk once the session has messages, so a
+        scratch session is never materialised just for a title.
+        """
+        if not _valid_session_id(session_id):
+            raise ValueError("invalid session id")
+        with self._lock:
+            runtime = self._sessions.get(session_id)
+        session = runtime.session if runtime is not None else self.session_store.load_session(session_id)
+        if session is None:
+            raise KeyError(session_id)
+        session.title = str(title or "").strip()[:120] or "untitled"
+        persisted = bool(getattr(session, "messages", None))
+        if persisted:
+            self.session_store.save_session(session)
+        return {"session": self._summary(session), "persisted": persisted}
+
+    def remove_session(self, session_id: str) -> bool:
+        """Delete a session and its children (DELETE), aborting it first when a
+        turn is still running so no writer keeps touching the file."""
+        if not _valid_session_id(session_id):
+            raise ValueError("invalid session id")
+        with self._lock:
+            runtime = self._sessions.pop(session_id, None)
+        if runtime is not None:
+            try:
+                runtime.abort()
+            except Exception:
+                pass
+            try:
+                runtime.close()
+            except Exception:
+                pass
+        return bool(self.session_store.delete_session(session_id))
+
+    def set_default_model(self, model: str, provider: str = "") -> dict[str, Any]:
+        """Make one model the default for every client (TUI, CLI, SDK, web).
+
+        The TUI keeps its pick in memory only, so a web pick would be invisible
+        everywhere else. Writing it to the config is what wires the two
+        together: cfg.provider/cfg.model are updated in place and persisted with
+        the same guarded writer the rest of the app uses.
+        """
+        model = str(model or "").strip()
+        provider = str(provider or "").strip()
+        if not provider and "/" in model:
+            provider, _, model = model.partition("/")
+        if not model:
+            raise ValueError("model is required")
+        known = {str(item.get("id") or "") for item in self.list_models()["models"]}
+        if known and model not in known:
+            raise ValueError(f"unknown model: {model}")
+        self.cfg.provider = provider or self.cfg.provider
+        self.cfg.model = model
+        from .config import save_config
+
+        save_config(self.cfg)
+        self._models_cache = None
+        return {"provider": self.cfg.provider, "model": self.cfg.model, "persisted": True}
+
+    def list_models(self) -> dict[str, Any]:
+        """Model list for the web/SDK clients: same source as the TUI picker.
+
+        Cached for ``MODELS_TTL_SECONDS`` so a page reload never re-probes the
+        catalog. Any failure degrades to an empty list plus the configured
+        model, never a 500.
+        """
+        now = time.time()
+        cached = self._models_cache
+        if cached is not None and now - cached[0] < MODELS_TTL_SECONDS:
+            return cached[1]
+        try:
+            from .providers.rotation import fetch_zen_models
+
+            raw = fetch_zen_models()
+        except Exception:
+            raw = []
+        models: list[dict[str, Any]] = []
+        for item in raw or []:
+            mid = str(item.get("id") or "")
+            if not mid:
+                continue
+            models.append(
+                {
+                    "id": mid,
+                    "provider": str(item.get("provider") or "opencode"),
+                    "name": str(item.get("name") or mid),
+                    "free": bool(item.get("free")),
+                    "context": item.get("context") or 0,
+                    "alive": bool(item.get("alive", True)),
+                    "release_date": str(item.get("release_date") or ""),
+                }
+            )
+        models.sort(key=lambda m: (not m["free"], not m["alive"], m["name"].lower()))
+        payload = {
+            "models": models,
+            "current": str(getattr(self.cfg, "model", "") or ""),
+            "provider": str(getattr(self.cfg, "provider", "") or ""),
+            "ts": now,
+        }
+        self._models_cache = (now, payload)
+        return payload
 
     @staticmethod
     def _summary(session: Any) -> dict[str, Any]:
@@ -545,8 +669,21 @@ class _Handler(BaseHTTPRequestHandler):
         if parts == ["api", "v1", "config"]:
             self._json(HTTPStatus.OK, self.state.cfg.as_dict(show_secrets=False))
             return
+        if parts == ["api", "v1", "models"]:
+            self._json(HTTPStatus.OK, self.state.list_models())
+            return
         if parts == ["api", "v1", "sessions"]:
-            self._json(HTTPStatus.OK, {"sessions": self.state.list_sessions()})
+            self._json(HTTPStatus.OK, {"sessions": self.state.list_sessions(query.get("scope", ["directory"])[0])})
+            return
+        if parts == ["api", "v1", "ide", "context"]:
+            with self.state.ide_lock:
+                self._json(HTTPStatus.OK, {"context": self.state.ide_context})
+            return
+        if parts == ["api", "v1", "ide", "action"]:
+            with self.state.ide_lock:
+                action = self.state.ide_action
+                self.state.ide_action = {}
+            self._json(HTTPStatus.OK, {"action": action})
             return
         if len(parts) == 4 and parts[:3] == ["api", "v1", "sessions"]:
             runtime = self.state.get_session(parts[3])
@@ -568,6 +705,52 @@ class _Handler(BaseHTTPRequestHandler):
             return
         self._error(HTTPStatus.NOT_FOUND, "endpoint not found")
 
+    def do_PATCH(self) -> None:
+        if not self._authorized():
+            self._error(HTTPStatus.UNAUTHORIZED, "missing or invalid server token")
+            return
+        path, _query = self._path()
+        parts = [unquote(part) for part in path.strip("/").split("/") if part]
+        try:
+            body = self._body()
+        except ValueError as exc:
+            self._error(HTTPStatus.BAD_REQUEST, str(exc))
+            return
+        if len(parts) == 4 and parts[:3] == ["api", "v1", "sessions"]:
+            try:
+                payload = self.state.rename_session(parts[3], str(body.get("title") or ""))
+            except KeyError:
+                self._error(HTTPStatus.NOT_FOUND, "session not found")
+                return
+            except ValueError as exc:
+                self._error(HTTPStatus.BAD_REQUEST, str(exc))
+                return
+            except Exception as exc:
+                self._error(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
+                return
+            self._json(HTTPStatus.OK, payload)
+            return
+        self._error(HTTPStatus.NOT_FOUND, "endpoint not found")
+
+    def do_DELETE(self) -> None:
+        if not self._authorized():
+            self._error(HTTPStatus.UNAUTHORIZED, "missing or invalid server token")
+            return
+        path, _query = self._path()
+        parts = [unquote(part) for part in path.strip("/").split("/") if part]
+        if len(parts) == 4 and parts[:3] == ["api", "v1", "sessions"]:
+            try:
+                deleted = self.state.remove_session(parts[3])
+            except ValueError as exc:
+                self._error(HTTPStatus.BAD_REQUEST, str(exc))
+                return
+            except Exception as exc:
+                self._error(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
+                return
+            self._json(HTTPStatus.OK, {"deleted": deleted, "id": parts[3]})
+            return
+        self._error(HTTPStatus.NOT_FOUND, "endpoint not found")
+
     def do_POST(self) -> None:
         if not self._authorized():
             self._error(HTTPStatus.UNAUTHORIZED, "missing or invalid server token")
@@ -579,10 +762,48 @@ class _Handler(BaseHTTPRequestHandler):
         except ValueError as exc:
             self._error(HTTPStatus.BAD_REQUEST, str(exc))
             return
+        if parts == ["api", "v1", "model"]:
+            try:
+                payload = self.state.set_default_model(
+                    str(body.get("model") or ""), str(body.get("provider") or "")
+                )
+            except ValueError as exc:
+                self._error(HTTPStatus.BAD_REQUEST, str(exc))
+                return
+            except Exception as exc:
+                self._error(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
+                return
+            self._json(HTTPStatus.OK, payload)
+            return
         if parts == ["api", "v1", "shutdown"]:
             stopping = self.state.request_shutdown()
             status = HTTPStatus.ACCEPTED if stopping else HTTPStatus.CONFLICT
             self._json(status, {"stopping": stopping})
+            return
+        if parts == ["api", "v1", "ide", "context"]:
+            with self.state.ide_lock:
+                self.state.ide_context = {
+                    "path": str(body.get("path") or ""),
+                    "uri": str(body.get("uri") or ""),
+                    "language": str(body.get("language") or ""),
+                    "line": int(body.get("line") or 0),
+                    "character": int(body.get("character") or 0),
+                    "content": str(body.get("content") or ""),
+                    "selected": str(body.get("selected") or ""),
+                }
+            self._json(HTTPStatus.OK, {"ok": True})
+            return
+        if parts == ["api", "v1", "ide", "action"]:
+            with self.state.ide_lock:
+                self.state.ide_action = {
+                    "id": str(body.get("id") or ""),
+                    "type": str(body.get("type") or ""),
+                    "path": str(body.get("path") or ""),
+                    "line": int(body.get("line") or 0),
+                    "character": int(body.get("character") or 0),
+                    "content": str(body.get("content") or ""),
+                }
+            self._json(HTTPStatus.OK, {"ok": True})
             return
         if parts == ["api", "v1", "sessions"]:
             try:

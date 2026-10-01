@@ -8,12 +8,10 @@ instructions + user system override. Plan/build differences are injected as
 from __future__ import annotations
 
 import datetime
-import json
 import os
 from pathlib import Path
 
 from ..config import Config
-from ..globals import resolve_worktree
 
 _PROMPT_DIR = Path(__file__).resolve().parent
 _base_cache: str | None = None
@@ -126,7 +124,11 @@ def build_environment(directory: Path, worktree: Path, provider_id: str, model_i
     )
 
 
-def labeled_prompt_parts(
+_MEMORY_LABEL = "memory"
+_RECENT_LABEL = "recent session"
+
+
+def _raw_prompt_parts(
     *,
     directory: Path,
     worktree: Path,
@@ -135,9 +137,10 @@ def labeled_prompt_parts(
     cfg: Config,
     agent: str = "build",
 ) -> list[tuple[str, str]]:
-    """Every system-prompt block as (label, text) — the SINGLE builder the
-    sender AND the preview both use, so the preview misses not one letter.
-    Labels name the source file exactly as injected below."""
+    """The disk-derived blocks, carrying an EMPTY `memory` slot. This is the
+    cached half: every block here changes only when a file on disk changes,
+    whereas memory is picked per turn against the user's message and so must
+    not be baked in."""
     blocks: list[tuple[str, str]] = []
     try:
         base = _base_text()
@@ -170,15 +173,9 @@ def labeled_prompt_parts(
             blocks.append((f"Agent instructions ({agent}.md)", md_text))
     except Exception:
         pass
-    try:
-        memory = _load_memory(str(worktree))
-    except Exception:
-        memory = ""
-    if memory:
-        try:
-            blocks.append(("memory", _memory_block(memory)))
-        except Exception:
-            blocks.append(("memory", memory))
+    # Placeholders only — filled per turn by labeled_prompt_parts().
+    blocks.append((_MEMORY_LABEL, ""))
+    blocks.append((_RECENT_LABEL, ""))
     try:
         skills = _load_skills(cfg, agent)
     except Exception:
@@ -191,7 +188,105 @@ def labeled_prompt_parts(
         override = ""
     if override:
         blocks.append(("system_prompt (config override)", override))
-    return [(label, text) for label, text in blocks if text]
+    return [
+        (label, text) for label, text in blocks
+        if text or label in (_MEMORY_LABEL, _RECENT_LABEL)
+    ]
+
+
+def _cached_raw_parts(
+    *,
+    directory: Path,
+    worktree: Path,
+    provider_id: str,
+    model_id: str,
+    cfg: Config,
+    agent: str,
+) -> list[tuple[str, str]] | None:
+    """Cached disk-derived blocks, or None when the cache cannot be used."""
+    try:
+        key = _system_cache_key(
+            directory=directory, worktree=worktree, provider_id=provider_id,
+            model_id=model_id, cfg=cfg, agent=agent,
+        )
+    except Exception:
+        key = None
+    if key is None:
+        return None
+    try:
+        hit = _SYSTEM_CACHE.get(key)
+    except Exception:
+        hit = None
+    if isinstance(hit, list):
+        return hit
+    parts = _raw_prompt_parts(
+        directory=directory, worktree=worktree, provider_id=provider_id,
+        model_id=model_id, cfg=cfg, agent=agent,
+    )
+    try:
+        if len(_SYSTEM_CACHE) >= _SYSTEM_CACHE_MAX:
+            _SYSTEM_CACHE.pop(next(iter(_SYSTEM_CACHE)), None)
+        _SYSTEM_CACHE[key] = parts
+    except Exception:
+        pass
+    return parts
+
+
+def labeled_prompt_parts(
+    *,
+    directory: Path,
+    worktree: Path,
+    provider_id: str,
+    model_id: str,
+    cfg: Config,
+    agent: str = "build",
+    query: str = "",
+    recent: str = "",
+) -> list[tuple[str, str]]:
+    """Every system-prompt block as (label, text) — the SINGLE builder the
+    sender AND the preview both use, so the preview misses not one letter.
+    Labels name the source file exactly as injected below.
+
+    `query` is the current user message: memory notes are scored against it so
+    a turn carries the notes it actually needs instead of the newest N.
+    `recent` is the previous session's distilled lines, shown on the first
+    turn of a session (see memory_capture.peek_pending).
+    """
+    blocks = _cached_raw_parts(
+        directory=directory, worktree=worktree, provider_id=provider_id,
+        model_id=model_id, cfg=cfg, agent=agent,
+    )
+    if blocks is None:
+        blocks = _raw_prompt_parts(
+            directory=directory, worktree=worktree, provider_id=provider_id,
+            model_id=model_id, cfg=cfg, agent=agent,
+        )
+    try:
+        memory = _load_memory(str(worktree), query=query)
+    except Exception:
+        memory = ""
+    if memory:
+        try:
+            memory = _memory_block(memory)
+        except Exception:
+            pass
+    recent_text = ""
+    if recent and recent.strip():
+        try:
+            recent_text = _block_template("recent.md", "{content}", recent)
+        except Exception:
+            recent_text = f"From your last session:\n{recent}"
+    out: list[tuple[str, str]] = []
+    for label, text in blocks:
+        if label == _MEMORY_LABEL:
+            if memory:
+                out.append((label, memory))
+        elif label == _RECENT_LABEL:
+            if recent_text:
+                out.append((label, recent_text))
+        else:
+            out.append((label, text))
+    return [(label, text) for label, text in out if text]
 
 
 def _stat_stamp(path: Path) -> tuple[int, int]:
@@ -259,34 +354,14 @@ def build_system_prompt(
     model_id: str,
     cfg: Config,
     agent: str = "build",
+    query: str = "",
+    recent: str = "",
 ) -> str:
-    try:
-        key = _system_cache_key(
-            directory=directory, worktree=worktree, provider_id=provider_id,
-            model_id=model_id, cfg=cfg, agent=agent,
-        )
-    except Exception:
-        key = None
-    if key is not None:
-        try:
-            hit = _SYSTEM_CACHE.get(key)
-        except Exception:
-            hit = None
-        if hit is not None:
-            return hit
     blocks = labeled_prompt_parts(
         directory=directory, worktree=worktree, provider_id=provider_id,
-        model_id=model_id, cfg=cfg, agent=agent,
+        model_id=model_id, cfg=cfg, agent=agent, query=query, recent=recent,
     )
-    text = "\n\n".join(t for _label, t in blocks)
-    if key is not None:
-        try:
-            if len(_SYSTEM_CACHE) >= _SYSTEM_CACHE_MAX:
-                _SYSTEM_CACHE.pop(next(iter(_SYSTEM_CACHE)), None)
-            _SYSTEM_CACHE[key] = text
-        except Exception:
-            pass
-    return text
+    return "\n\n".join(t for _label, t in blocks)
 
 
 def _block_template(name: str, placeholder: str, content: str) -> str:
@@ -313,24 +388,24 @@ def _memory_block(notes: str) -> str:
     return _block_template("memory.md", "{content}", notes)
 
 
-def _load_memory(worktree: str, limit: int = 50) -> str:
-    """Return the stored `remember` notes for this project (plus global ones)
-    as a bulleted block, or '' when nothing is saved. Safely tolerant of a
-    corrupt/absent memory file."""
-    from ..globals import Path as GPath
-
+def _load_memory(worktree: str, query: str = "", limit: int = 0) -> str:
+    """Return the `remember` notes worth injecting this turn as a bulleted
+    block, or '' when nothing is saved. Notes are scored against `query` so an
+    old-but-relevant note still surfaces instead of being crowded out by
+    recent chatter. Safely tolerant of a corrupt/absent memory file."""
     try:
-        raw = (GPath.data / "memory.json").read_text(encoding="utf-8")
-        data = json.loads(raw)
-    except (OSError, ValueError):
+        from ..tools.remember import INJECT_LIMIT, select_notes
+
+        notes = select_notes(
+            worktree, query=query, limit=limit or INJECT_LIMIT,
+        )
+    except Exception:
         return ""
-    entries = data.get("entries") if isinstance(data, dict) else None
-    if not isinstance(entries, list):
-        return ""
-    notes = [e for e in entries if e.get("text") and (not e.get("project") or e.get("project") == worktree)][-limit:]
-    if not notes:
-        return ""
-    lines = [f"- {str(e.get('text')).replace(chr(10), ' ')}" for e in notes]
+    lines = [
+        f"- {str(e.get('text', '')).replace(chr(10), ' ')}"
+        for e in notes
+        if e.get("text")
+    ]
     return "\n".join(lines)
 
 

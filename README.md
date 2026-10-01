@@ -259,9 +259,25 @@ Env overrides: `OPENCODE_CONFIG` (file), `OPENCODE_CONFIG_CONTENT` (inline JSON)
 
 Conversations persist as JSON (`~/.local/share/opencode_py/sessions`, durable
 fsync'd writes) — `/resume`, `/sessions` (`Ctrl+R`), arrow-key navigation
-between parent/sub-agent sessions, `/export` to Markdown. `remember` notes
-reload into every system prompt as project memory. The most-used live model
-becomes the default on fresh installs.
+between parent/sub-agent sessions, `/export` to Markdown. The most-used live
+model becomes the default on fresh installs.
+
+### Long-term memory
+
+`remember` saves notes that outlive the session, scoped to the project (or
+global). Rather than dumping the newest N into every prompt, each turn injects
+the notes that **match the current request** (BM25-style term overlap, plus
+recency, reuse, and project specificity), so an old but on-topic note still
+surfaces and off-topic ones stop costing context. Notes take an optional
+`kind` (`rule` / `fact` / `decision` / `fix`) and a `pinned` flag — pinned
+notes are always injected and are never evicted.
+
+Retrieval is lexical on purpose: an armv7 phone cannot afford an embedding
+model, and short notes separate fine on term overlap. The tokenized corpus is
+cached on the file's stamp, so a turn pays only for scoring, and scoring never
+writes. When the store passes its 300-note budget, the *least valuable* notes
+are dropped rather than simply the oldest. `remember list` shows everything,
+since a prompt only carries the most relevant slice.
 
 ## TTS (optional, off by default)
 
@@ -393,7 +409,7 @@ opencode_py/
   globals.py       XDG paths, worktree discovery
   providers/       zen, openai_compat, anthropic, ollama, rotation/failover, catalog
   agent/           loop, system prompt, messages, tool-call parsing, compaction
-  tools/           34 builtins + registry, plugins, MCP client
+  tools/           29 builtins + registry, plugins, MCP client
     tools/browser.py  phone-Chrome driver (CDP: status/connect/open/tabs/goto/
                       snapshot/click/type/press/scroll/wait/screenshot/js/close)
     tools/phone.py    whole-phone driver (adb: status/tap/swipe/type/key/
@@ -407,12 +423,15 @@ opencode_py/
   tui/             Textual app, chat, pickers, dialogs, theme editor
   index/           code indexer (find_symbols backend)
   util/            diff, sse, truncate, net, markdown, gitignore
-tests/             51 test files, 474 tests
+tests/             69 test files, 927 tests
 clients/           acode editor plugin — a separate product, not used by the agent
 opencode.json.example  starter config
 ```
 
-116 Python modules: ~55k lines of source plus ~8.7k lines of tests.
+139 Python modules: ~62k lines of source plus ~14.2k lines of tests.
+
+Run `python tools/readme_stats.py` to print these numbers (and check they still
+match), so they cannot silently drift again.
 
 ## License
 

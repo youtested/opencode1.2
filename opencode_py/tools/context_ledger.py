@@ -128,8 +128,6 @@ def unseen_ranges(
     return [(a, b) for a, b in unseen if b >= a]
 
 
-def fully_delivered(path: str, mtime_ns: int, size: int, start: int, end: int) -> bool:
-    return not unseen_ranges(path, mtime_ns, size, start, end)
 
 
 def reset_for_compaction() -> None:
@@ -148,6 +146,5 @@ def generation() -> int:
 
 def clear() -> None:
     """Test helper / manual wipe (does NOT bump the generation)."""
-    global _generation
     with _LOCK:
         _files.clear()

@@ -181,22 +181,83 @@ def _tree_cached(path: Path):
     return t2
 
 
-def _word_at(path: Path, line: int, character: int) -> str:
+_MASK_CACHE: dict[str, tuple] = {}
+
+
+def _noncode_mask(path: Path, lines) -> dict[int, list[tuple[int, int]]]:
+    """Per line, the column ranges that are comments or string literals.
+
+    A word inside a comment is not code. Resolving one produced confident,
+    wrong answers (pointing at a comment on engine.py:209 returned eight
+    unrelated definitions of ``walk``), so the mask is what makes
+    goToDefinition refuse instead of guessing.
+    """
+    stat = _stat_key(path)
+    if stat is None:
+        return {}
+    hit = _MASK_CACHE.get(str(path))
+    if hit is not None and hit[0] == stat[0] and hit[1] == stat[1]:
+        return hit[2]
+    mask: dict[int, list[tuple[int, int]]] = {}
+    if path.suffix == ".py":
+        import io
+        import tokenize
+
+        # _lines_cached holds newline-less lines, so re-add the newlines or
+        # tokenize sees the whole file as one line and every mask lands on 1
+        src = "\n".join(lines) + "\n"
+        try:
+            for tok in tokenize.generate_tokens(io.StringIO(src).readline):
+                if tok.type in (tokenize.COMMENT, tokenize.STRING):
+                    for ln in range(tok.start[0], tok.end[0] + 1):
+                        a = tok.start[1] if ln == tok.start[0] else 0
+                        b = tok.end[1] if ln == tok.end[0] else len(src)
+                        mask.setdefault(ln, []).append((a, b))
+        except Exception:
+            mask = {}
+    if len(_MASK_CACHE) > 64:
+        _MASK_CACHE.pop(next(iter(_MASK_CACHE)))
+    _MASK_CACHE[str(path)] = (stat[0], stat[1], mask)
+    return mask
+
+
+def _dotted_base(s: str, start: int) -> str:
+    """If ``s[start:]`` begins ``base.attr``, return ``base`` (else "")."""
+    if start == 0 or s[start - 1] != ".":
+        return ""
+    j = start - 1
+    while j > 0 and (s[j - 1].isalnum() or s[j - 1] in "_$"):
+        j -= 1
+    return s[j:start - 1] if j < start - 1 else ""
+
+
+def _word_span(path: Path, line: int, character: int) -> tuple[str, str]:
+    """The identifier at (line, character) plus the module it hangs off.
+
+    ``os.walk`` yields ("walk", "os") so a jump can say "attribute of the
+    imported module os" instead of hunting for a local function named walk.
+    """
     try:
         lines = _lines_cached(path)
         if not lines or line < 1 or line > len(lines):
-            return ""
+            return "", ""
         s = lines[line - 1]
         if not s:
-            return ""
+            return "", ""
         col = max(1, int(character or 1)) - 1
         col = min(col, max(0, len(s) - 1))
+        mask = _noncode_mask(path, lines)
         for m in _WORD_RE.finditer(s):
             if m.start() <= col < m.end():
-                return m.group(0)
-        return ""
+                for a, b in mask.get(line, ()):
+                    if a <= m.start() < b:
+                        return "", ""  # comment or string: not an identifier
+                return m.group(0), _dotted_base(s, m.start())
+        return "", ""
     except Exception:
-        return ""
+        return "", ""
+
+
 
 
 def _one_file_index(root: Path, path: Path):
@@ -254,6 +315,33 @@ def _docstring(path: Path, name: str) -> str:
                 except Exception:
                     return ""
     return ""
+
+
+_PYFLAKES_MISSING: str = ""
+
+
+def _pyflakes_note() -> str:
+    """Human-readable reason Python style checks are unavailable, or "".
+
+    ``_diagnostics_py`` cannot return this as an "issue" — its result gates
+    writes and edits, and a missing checker is not a defect in the file. So the
+    truth is surfaced by the callers instead of being faked as a diagnostic.
+    """
+    global _PYFLAKES_MISSING
+    if _PYFLAKES_MISSING:
+        return _PYFLAKES_MISSING
+    try:
+        import importlib.util
+
+        if importlib.util.find_spec("pyflakes.api") is not None:
+            return ""
+    except Exception:
+        pass
+    _PYFLAKES_MISSING = (
+        "pyflakes is not installed, so style/undefined-name checks did not run "
+        "(pip install pyflakes)"
+    )
+    return _PYFLAKES_MISSING
 
 
 def _diagnostics_py(path: Path) -> list[str]:
@@ -378,14 +466,21 @@ def tool() -> Tool:
         if op == "diagnostics":
             if path.suffix == ".py":
                 issues = _diagnostics_py(path)
+                note = _pyflakes_note()
                 if not issues:
-                    return {"output": f"No diagnostics in {path.name} — clean.", "metadata": {"file": str(path), "issues": 0}}
+                    # Never claim "clean" when the style checker never ran.
+                    msg = f"No diagnostics in {path.name} — clean."
+                    if note:
+                        msg = f"No diagnostics in {path.name} — {note}"
+                    return {"output": msg, "metadata": {"file": str(path), "issues": 0, "pyflakes": not note}}
                 lines = [f"Diagnostics in {path.name} ({len(issues)}):"]
                 lines.extend(f"- {x}" for x in issues)
-                return {"output": "\n".join(lines), "metadata": {"file": str(path), "issues": len(issues)}}
+                if note:
+                    lines.append(f"note: {note}")
+                return {"output": "\n".join(lines), "metadata": {"file": str(path), "issues": len(issues), "pyflakes": not note}}
             return {"output": f"No diagnostics provider for {path.suffix or 'this file'} (Python only).", "metadata": {"file": str(path)}}
 
-        name = _word_at(path, line, character) if line > 0 else ""
+        name, attr_base = _word_span(path, line, character) if line > 0 else ("", "")
         if not name and op in ("goToDefinition", "findReferences", "hover", "goToImplementation", "incomingCalls", "outgoingCalls"):
             return {"output": f"No identifier at {path.name}:{line}:{character}.", "error": True}
 
@@ -409,6 +504,23 @@ def tool() -> Tool:
 
         if op in ("goToDefinition", "goToImplementation"):
             fi = _one_file_index(root, path)
+            if attr_base and fi is not None:
+                # `os.walk` is an attribute of an imported module. Searching the
+                # workspace for a function named `walk` invented eight wrong
+                # answers, so say plainly that this one is not local.
+                mods = [i.module for i in getattr(fi, "imports", []) or []]
+                if attr_base in mods or any(
+                    m == attr_base or m.startswith(attr_base + ".") for m in mods
+                ):
+                    return {
+                        "output": (
+                            f"`{name}` is an attribute of the imported module "
+                            f"`{attr_base}` — not defined in this project "
+                            f"(external/stdlib). No local definition to jump to."
+                        ),
+                        "metadata": {"name": name, "base": attr_base,
+                                     "external": True},
+                    }
             if fi is not None:
                 same = [s for s in fi.symbols if s.name == name]
                 if same:

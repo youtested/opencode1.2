@@ -17,6 +17,10 @@ dependencies = [
     "platformdirs>=4.0,<5.0",
     "click>=8.1,<9.0",
     "pygments>=2.16,<3.0",
+    # powers the `lsp`/`verify` tools' Python diagnostics (no binary LSP
+    # server needed on the phone). Undeclared before, so a fresh install
+    # silently skipped those checks and reported "clean".
+    "pyflakes>=3.0,<4.0",
 ]
 
 [project.optional-dependencies]

@@ -94,12 +94,70 @@ def _strip_to_code(text: str) -> str:
     return "".join(out)
 
 
+_BRACE_CACHE: list[tuple[list, list, list, bool]] = []
+_BRACE_CACHE_MAX = 2
+
+
+def _brace_index(san: list[str], total: int):
+    """Per-line (opens, closes) for `san`, cached, plus a "mixed lines" flag.
+
+    `_brace_end` used to walk characters from the declaration to the end of the
+    file on every call — 5.8ms per call on a 2,900-line header, called once per
+    declaration. Counting braces per line once turns each of those walks into
+    two array reads.
+    """
+    for ref, o, c, mixed in _BRACE_CACHE:
+        if ref is san:
+            return o, c, mixed
+    o = [0] * total
+    c = [0] * total
+    mixed = False
+    for i in range(min(total, len(san))):
+        line = san[i]
+        if "{" in line or "}" in line:
+            oi = line.count("{")
+            ci = line.count("}")
+            o[i] = oi
+            c[i] = ci
+            if oi and ci:
+                mixed = True
+    _BRACE_CACHE.append((san, o, c, mixed))
+    while len(_BRACE_CACHE) > _BRACE_CACHE_MAX:
+        _BRACE_CACHE.pop(0)
+    return o, c, mixed
+
+
 def _brace_end(san: list[str], start: int, total: int) -> int | None:
     """Closing 1-indexed line of the `{` block opened at/after `start`.
 
     Returns None when no brace opens (header-only line) or it never closes.
     A `}` on the header line itself (single-line body) closes immediately.
     """
+    opens, closes, mixed = _brace_index(san, total)
+    if mixed:
+        # Some line both opens and closes, so brace *order* decides the answer
+        # (`} else {`, default arguments `= {}`). Counting cannot resolve that,
+        # and guessing changed 0.5% of results, so fall back to the exact walk.
+        return _brace_end_exact(san, start, total)
+    depth = 0
+    started = False
+    for i in range(start - 1, total):
+        oi = opens[i]
+        ci = closes[i]
+        if not started:
+            if not oi:
+                continue  # closes before any open are ignored, as before
+            started = True
+            depth = oi
+            continue
+        depth += oi - ci
+        if depth <= 0:
+            return i + 1
+    return None
+
+
+def _brace_end_exact(san: list[str], start: int, total: int) -> int | None:
+    """Character-accurate `_brace_end`, for files the counting path rejects."""
     depth = 0
     started = False
     for i in range(start - 1, total):
@@ -190,6 +248,33 @@ def _indent_end(lines: list[str], start: int, total: int) -> int:
     return total
 
 
+_SAN_CACHE: list[tuple[list, list[str]]] = []
+_SAN_CACHE_MAX = 2
+
+
+def _sanitized(lines: list[str]) -> list[str]:
+    """Comment/string-stripped view of `lines`, computed once per file.
+
+    `block_span` is called once per declaration, and it used to rebuild this
+    from scratch every time: a char-by-char pass over the whole file, per
+    declaration. A 2,700-line C header with ~500 decls is 500 full passes and
+    it took minutes on a phone.
+
+    The cache holds a strong reference to `lines`, so the identity check stays
+    sound (a freed list's id cannot be recycled onto a different object while
+    we still hold it). Two entries is enough to cover a per-file index pass
+    and keeps the extra memory to one copy of the file.
+    """
+    for ref, san in _SAN_CACHE:
+        if ref is lines:
+            return san
+    san = _strip_to_code("\n".join(lines)).split("\n")
+    _SAN_CACHE.append((lines, san))
+    while len(_SAN_CACHE) > _SAN_CACHE_MAX:
+        _SAN_CACHE.pop(0)
+    return san
+
+
 def block_span(lines: list[str], start: int, language: str = "") -> tuple[int, int]:
     """Exact (start, end) 1-indexed lines of the block at `start`. Never raises."""
     try:
@@ -218,7 +303,7 @@ def block_span(lines: list[str], start: int, language: str = "") -> tuple[int, i
                 if end is not None:
                     return start, end
             return start, _indent_end(lines, start, total)
-        san = _strip_to_code("\n".join(lines)).split("\n")
+        san = _sanitized(lines)
         end = _brace_end(san, start, total)
         if end is not None:
             return start, end

@@ -119,15 +119,5 @@ def cached_entries(path: Path, lines: list[str], st=None) -> list[tuple[int, str
     return entries
 
 
-def cache_size() -> int:
-    try:
-        return len(_CACHE)
-    except Exception:
-        return 0
 
 
-def cache_clear() -> None:
-    try:
-        _CACHE.clear()
-    except Exception:
-        pass

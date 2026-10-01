@@ -158,11 +158,6 @@ class AgentPermissionEditor(ModalScreen[None]):
             self.scope = set(scope)
         self._rebuild_keep_focus()
 
-    def reload_tools(self, tools: list[tuple[str, str]]) -> None:
-        # keep the highlight on the same row across the rebuild (the
-        # clear+re-add used to drop it, so the selection "disappeared"
-        # after every Enter press).
-        self.reload_state(tools=tools)
 
     def _rebuild_keep_focus(self) -> None:
         keep: str | None = None

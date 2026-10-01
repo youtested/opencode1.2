@@ -91,7 +91,7 @@ class StatusBar(Static):
 
         right = Text()
         if self.interrupt_armed:
-            right.append("esc again to interrupt", style=theme.c("accent"))
+            right.append("esc again to force stop", style=theme.c("accent"))
             right.append("  ", style=theme.c("text_muted"))
         if self.retry_message:
             right.append(self.retry_message, style=theme.c("warning"))

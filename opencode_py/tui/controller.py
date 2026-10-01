@@ -23,8 +23,6 @@ class Controller:
         for handler in self._handlers.get(kind, []):
             handler(event)
 
-    def emit_event(self, event: dict[str, Any]) -> None:
-        self.emit(event)
 
     def clear(self) -> None:
         self._handlers.clear()

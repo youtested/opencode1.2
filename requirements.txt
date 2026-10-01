@@ -17,3 +17,7 @@ platformdirs>=4.0,<5.0
 click>=8.1,<9.0
 typing-extensions>=4.8,<5.0
 textual>=0.80,<9.0
+# Python diagnostics for the `lsp`/`verify` tools (pure-python, no binary LSP
+# server on the phone). Was never listed, so a fresh install skipped the
+# checks entirely and reported the file as clean.
+pyflakes>=3.0,<4.0

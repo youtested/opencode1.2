@@ -72,7 +72,6 @@ def _action_wake(hold: bool) -> dict:
 
 def _battery_from_sysfs() -> dict | None:
     """Kernel fallback: /sys/class/power_supply/battery/{capacity,status}."""
-    import os
     from pathlib import Path
 
     base = Path(_SYSFS_POWER)

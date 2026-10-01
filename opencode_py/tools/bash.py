@@ -162,7 +162,7 @@ def _stream_output(
                 capped = True
 
     while True:
-        # Honor a user interrupt the moment it lands (2nd ESC / ctrl+C flips
+        # Honor a user interrupt the moment it lands (ESC / ctrl+C flips
         # the shared flag the app wires into the engine's interrupt callback).
         if is_interrupted is not None:
             try:

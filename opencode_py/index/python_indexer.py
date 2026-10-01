@@ -109,10 +109,16 @@ class _PythonWalker:
         self._stmt_generic(node)
 
     def _stmt_generic(self, node: ast.stmt) -> None:
+        # Descend into EVERY non-stmt child, not just ast.expr. Statements wrap
+        # their expressions in other node kinds — ExceptHandler.type (the name
+        # in `except ContextOverflowError:`), withitem.context_expr, the
+        # match_case / MatchClass.cls of a `match` block — and restricting this
+        # to stmt/expr silently dropped those names, so "callers X" under-
+        # reported and callers of a real function looked dead.
         for child in ast.iter_child_nodes(node):
             if isinstance(child, ast.stmt):
                 self._stmt(child)
-            elif isinstance(child, ast.expr):
+            else:
                 self._expr(child, set(), "use")
 
     def s_Module(self, node: ast.Module) -> None:
@@ -128,9 +134,11 @@ class _PythonWalker:
         self.stack.append(node.name)
         for child in node.body:
             self._stmt(child)
+        self.stack.pop()
+        # decorators run BEFORE the class exists, so they belong to the
+        # enclosing scope, not to the class they decorate
         for deco in node.decorator_list:
             self._expr(deco, set(), "attribute")
-        self.stack.pop()
 
     def s_FunctionDef(self, node: ast.FunctionDef) -> None:
         self._fn(node, "function")
@@ -146,6 +154,25 @@ class _PythonWalker:
                    _signature_for_def(node), self._container(), "python")
         )
         self.depth += 1
+        # parameter + return annotations are real references (a type used only
+        # in a signature is still a use), and without this a class that is only
+        # ever mentioned as a type looked unreferenced
+        # arg nodes carry `annotation` only; the *defaults* live on the
+        # arguments node (positional) and as kw_defaults (keyword-only)
+        argsnode = getattr(node, "args", None)
+        for a in getattr(argsnode, "args", []) or []:
+            for piece in (a.annotation, getattr(a, "type_params", None)):
+                if isinstance(piece, ast.expr):
+                    self._expr(piece, set(), "use")
+        for d in getattr(argsnode, "defaults", []) or []:
+            if isinstance(d, ast.expr):
+                self._expr(d, set(), "use")
+        for kw in getattr(argsnode, "kw_defaults", []) or []:
+            if isinstance(kw, ast.expr):
+                self._expr(kw, set(), "use")
+        ret = getattr(node, "returns", None)
+        if isinstance(ret, ast.expr):
+            self._expr(ret, set(), "use")
         for child in node.body:
             self._stmt(child)
         for other in getattr(node, "decorator_list", []):
@@ -184,6 +211,30 @@ class _PythonWalker:
             ImportRecord(mod, self.path, node.lineno, False if is_std else None, aliases)
         )
 
+    def _target_reads(self, target: ast.AST) -> None:
+        """Index the part of an assignment target that is *read*.
+
+        ``loop.cfg.compaction_enabled = True`` writes only
+        ``compaction_enabled``; it still reads ``loop.cfg`` on the way there,
+        and those are real references. A bare ``x = 1`` is a pure Store and
+        contributes nothing, which is why this is not just ``_expr(target)``.
+        """
+        node = target
+        while isinstance(node, ast.Attribute):
+            node = node.value
+            if isinstance(node, ast.Attribute):
+                if node.attr not in _SKIP_BUILTINS:
+                    self.refs.append(
+                        Ref(node.attr, self.path, node.lineno, "attribute",
+                            self._container())
+                    )
+            else:
+                self._expr(node, set(), "use")
+                return
+        if isinstance(node, ast.Subscript):
+            # a[key] = v reads both a and key
+            self._expr(node, set(), "use")
+
     def s_Assign(self, node: ast.Assign) -> None:
         if self.depth == 0:
             for target in node.targets:
@@ -195,6 +246,13 @@ class _PythonWalker:
                                f"{target.id} = ...", self._container(), "python")
                     )
                     break
+        for target in node.targets:
+            self._target_reads(target)
+        self._expr(node.value, set(), "use")
+
+    def s_AugAssign(self, node: ast.AugAssign) -> None:
+        # x += 1 reads x before writing it
+        self._target_reads(node.target)
         self._expr(node.value, set(), "use")
 
     def s_AnnAssign(self, node: ast.AnnAssign) -> None:
@@ -207,6 +265,10 @@ class _PythonWalker:
             )
         if node.value is not None:
             self._expr(node.value, set(), "use")
+        self._target_reads(node.target)
+        # the annotation is a type reference: `count: int = 0` / `cb: Callable`
+        if isinstance(getattr(node, "annotation", None), ast.expr):
+            self._expr(node.annotation, set(), "use")
 
     # -- expressions ------------------------------------------------------
     def _expr(self, node: ast.AST, visited: set[int], role: str) -> None:
@@ -220,7 +282,11 @@ class _PythonWalker:
             return
         visited.add(id(node))
         if isinstance(node, ast.Name):
-            if node.id not in _SKIP_BUILTINS and isinstance(getattr(node, "ctx", None), ast.Load):
+            # ctx is None for an `except SomeError:` type and a MatchClass
+            # subject; those are real references. Store/Del are not, so they
+            # stay excluded.
+            ctx = getattr(node, "ctx", None)
+            if node.id not in _SKIP_BUILTINS and (ctx is None or isinstance(ctx, ast.Load)):
                 self.refs.append(
                     Ref(node.id, self.path, node.lineno, role, self._container())
                 )
@@ -252,8 +318,11 @@ def index_file(root: Path, rel: str, src: str, size: int, mtime: float) -> FileI
     if tree is not None:
         try:
             walker.s_Module(tree)
-        except Exception:  # pragma: no cover - defensive: ast quirks must not kill a build
-            walker = _PythonWalker(rel)
+        except Exception:  # pragma: no cover - ast quirks must not kill a build
+            # Keep whatever was collected before the failure. Re-running with a
+            # fresh walker used to silently drop every symbol and ref for the
+            # file, turning a crash into an empty index with no trace of the cause.
+            pass
     _classify_local_imports(walker.imports, root)
     return FileIndex(
         rel, mtime, size, "python",

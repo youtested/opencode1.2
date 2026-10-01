@@ -48,21 +48,6 @@ _LABEL_W = 24
 _VALUE_MAX = 40
 
 
-def _fmt_value(row: Row, theme: Any) -> list[tuple[str, str]]:
-    """[(text, style), ...] spans for a setting's value, styled by kind."""
-    try:
-        value = str(row.get())
-    except Exception:
-        value = "?"
-    if row.kind == "bool":
-        if value == "yes":
-            return [("on", f"bold {theme.c('success')}")]
-        return [("off", theme.c("text_muted"))]
-    if row.kind == "enum":
-        return [(value, "bold")]
-    if row.kind == "model":
-        return [(value, theme.c("secondary"))]
-    return [(value, theme.c("text"))]
 
 
 def _clip_value(text: str, limit: int = _VALUE_MAX) -> str:
@@ -71,71 +56,6 @@ def _clip_value(text: str, limit: int = _VALUE_MAX) -> str:
     return text[: limit - 1].rstrip() + "…"
 
 
-def _format_settings(
-    rows: list[Row],
-    index: int,
-    width: int,
-    theme: Any,
-    editing: bool = False,
-) -> tuple[list[Any], list[str]]:
-    """Legacy pure-function renderer (kept for compatibility).
-
-    The live popup now renders through ``OptionList`` (see
-    ``SettingsScreen._options``); this helper preserves the old import surface
-    for tests and external callers.
-    """
-    from rich.text import Text
-
-    accent = theme.c("accent")
-    muted = theme.c("text_muted")
-    highlight = theme.c("primary")
-    bar_bg = theme.c("background_element")
-
-    lines: list[Any] = []
-    plain: list[str] = []
-    first_section = True
-    for i, row in enumerate(rows):
-        selected = i == index and row.kind != "info" and not editing
-        if row.kind == "info" and row.label.startswith("—"):
-            name = row.label.strip("— ").strip()
-            if not first_section:
-                lines.append(Text(""))
-                plain.append("")
-            title = f" {name} "
-            rule_len = max(6, width - 5 - len(title))
-            t = Text(f"──{title}", style=f"bold {accent}")
-            t.append("─" * rule_len, style=accent)
-            lines.append(t)
-            plain.append(t.plain)
-            first_section = False
-            continue
-        label = row.label[: _LABEL_W - 1].ljust(_LABEL_W)
-        if row.kind == "info":
-            t = Text("   ")
-            t.append(label, style=muted)
-            try:
-                t.append(str(row.get()))
-            except Exception:
-                t.append("?")
-            lines.append(t)
-            plain.append(t.plain)
-            continue
-        vspans = _fmt_value(row, theme)
-        if selected:
-            t = Text("   ", style=f"on {bar_bg}")
-            t.append(label, style=f"{highlight} on {bar_bg}")
-            for s, st in vspans:
-                t.append(s, style=f"{st} on {bar_bg}")
-            used = 3 + len(label) + sum(len(s) for s, _ in vspans)
-            t.append(" " * max(0, width - used - 2), style=f"on {bar_bg}")
-        else:
-            t = Text("   ")
-            t.append(label, style=muted)
-            for s, st in vspans:
-                t.append(s, style=st)
-        lines.append(t)
-        plain.append(t.plain)
-    return lines, plain
 
 
 def _row_hint(row: Row) -> str:
@@ -624,22 +544,6 @@ class SettingsScreen(ModalScreen[None]):
         except Exception:
             return None
 
-    def _scroll_container(self) -> Any:
-        ol = self._list()
-        if ol is not None:
-            return ol
-        # legacy fallback for harness-free unit tests (not attached)
-        class _Dummy:
-            def focus(self) -> None:
-                pass
-
-            def scroll_to(self, *a: Any, **k: Any) -> None:
-                pass
-
-            def scroll_to_highlight(self, *a: Any, **k: Any) -> None:
-                pass
-
-        return _Dummy()
 
     def on_mount(self) -> None:
         self.rows = self._build_rows()
@@ -698,18 +602,6 @@ class SettingsScreen(ModalScreen[None]):
         except Exception:
             pass
 
-    def _keep_selection_visible(self) -> None:
-        """Scroll the selection into view (OptionList-native)."""
-        if not self.is_attached:
-            return
-        if self.editing:
-            return
-        try:
-            ol = self._list()
-            if ol is not None:
-                ol.scroll_to_highlight()
-        except Exception:
-            pass
 
     def _set_edit_input_visible(self, visible: bool) -> None:
         try:

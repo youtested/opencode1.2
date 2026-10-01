@@ -145,12 +145,6 @@ def _grouped_keys() -> list[tuple[str, list[str]]]:
     return out
 
 
-def _pane_groups(idx: int) -> list[tuple[str, list[str]]]:
-    groups = _grouped_keys()
-    left_names = {t for t, _ in _PANES[0]}
-    if idx == 0:
-        return [(t, k) for t, k in groups if t in left_names]
-    return [(t, k) for t, k in groups if t not in left_names]
 
 
 _EDITOR_CSS = """

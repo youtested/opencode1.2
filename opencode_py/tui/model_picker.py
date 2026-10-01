@@ -764,10 +764,6 @@ class ModelPicker(ModalScreen[str | None]):
     def _maybe_show_popular(self, lv: ListView) -> bool:
         """When nothing responds (offline / no keys): show Popular providers to
         connect, like official's popularProviders when !connected."""
-        try:
-            from ..commands import KEY_HINTS
-        except Exception:
-            KEY_HINTS = {}
         popular = [pid for pid, _ in FREE_SECTION if pid != "opencode"][:6]
         if not popular:
             return False
@@ -1035,35 +1031,6 @@ class ModelPicker(ModalScreen[str | None]):
             event.stop()
 
 
-def _zen_family(model_id: str) -> str:
-    """Upstream vendor behind an OpenCode Zen model, from its id prefix.
-
-    Kept for compat; the official picker no longer clusters Zen by family
-    (it sorts Free/newest/title instead).
-    """
-    import re
-
-    match = re.match(r"^[a-z]+", model_id.lower())
-    prefix = match.group(0) if match else model_id
-    families = {
-        "claude": "Anthropic",
-        "gemini": "Google",
-        "gpt": "OpenAI",
-        "kimi": "Moonshot",
-        "grok": "xAI",
-        "deepseek": "DeepSeek",
-        "glm": "Zhipu AI",
-        "minimax": "MiniMax",
-        "qwen": "Alibaba",
-        "nemotron": "NVIDIA",
-        "mimo": "Xiaomi",
-        "laguna": "Poolside",
-        "north": "Cohere",
-        "big": "Other",
-        "hy": "Other",
-        "ling": "Other",
-    }
-    return families.get(prefix, "Other")
 
 
 def _model_row_label(
@@ -1099,10 +1066,6 @@ def _model_row_label(
     return Label(f"{mark}{star}{name}{free_tag}{fav_tag}{prov}{ctx_tag}", classes="model-item")
 
 
-def _fallback_models(pid: str, has_key: bool = False) -> list[dict]:
-    """Kept for compat; the picker now hides dead lanes instead of showing
-    bundled placeholders (official shows only available catalog entries)."""
-    return []
 
 
 def _probe_ollama_daemon() -> list[dict]:
@@ -1202,7 +1165,7 @@ def _snapshot_path():
 
     try:
         GPath.init()
-        base = Path(GPath.cache)
+        base = GPath.cache
     except Exception:
         from pathlib import Path as _P
 

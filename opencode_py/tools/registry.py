@@ -12,6 +12,9 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from ..util.schema import provider_schema as _provider_schema
+from ..util.schema import sanitize_function_name
+
 
 @dataclass
 class Tool:
@@ -53,7 +56,7 @@ class Registry:
         # would otherwise silently overwrite each other and the wrong tool
         # executes. Disambiguate with a numeric suffix instead.
         try:
-            from ..providers.base import sanitize_function_name as _san
+            from ..util.schema import sanitize_function_name as _san
 
             want = _san(tool.name)
             for existing in self._tools.values():
@@ -234,38 +237,4 @@ def schema_with(params: dict[str, dict], required: list[str]) -> dict[str, Any]:
 
 def _sanitize_wire_name(name: str) -> str:
     """Wire-safe function name — delegates to the single shared helper."""
-    try:
-        from ..providers.base import sanitize_function_name as _san
-
-        return _san(name)
-    except Exception:  # pragma: no cover - import cycle fallback
-        import re as _re
-
-        safe = _re.sub(r"[^a-zA-Z0-9_-]", "_", str(name or ""))
-        safe = safe.strip("_-") or "tool"
-        return safe[:64]
-
-
-def _provider_schema(schema: dict[str, Any]) -> dict[str, Any]:
-    """Copy a tool schema for a provider, dropping non-standard keywords.
-
-    ``schema_with``/``_param`` add an ``"optional": True`` hint for the TUI
-    (and tool builders); it is NOT part of JSON Schema, and strict provider
-    tool-schema validators (Anthropic, some OpenAI-compatible gateways) reject
-    unknown keywords. Return a copy so the stored tool definition keeps its
-    hint while the wire format stays valid.
-    """
-    if not isinstance(schema, dict):
-        return schema
-    clean: dict[str, Any] = {}
-    for key, value in schema.items():
-        if key == "optional":
-            continue
-        if key == "properties" and isinstance(value, dict):
-            clean[key] = {
-                name: _provider_schema(prop) if isinstance(prop, dict) else prop
-                for name, prop in value.items()
-            }
-        else:
-            clean[key] = value
-    return clean
+    return sanitize_function_name(name)

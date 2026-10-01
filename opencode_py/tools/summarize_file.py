@@ -7,6 +7,7 @@ RULES (full guidance for maintainers; the sent schema is short):
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 from pathlib import Path
@@ -20,6 +21,19 @@ MAX_OUTPUT = 8 * 1024  # 8 KB cap on the whole summary
 
 BINARY_BLOCKERS = {".png", ".jpeg", ".jpg", ".gif", ".webp", ".pdf", ".doc", ".docx", ".xls", ".xlsx"}
 TEXT_PREVIEW_EXTENSIONS = {".py", ".pyi", ".md", ".txt", ".rst", ".json", ".jsonl", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".sh", ".js", ".ts", ".css", ".html", ".xml", ".csv", ".diff", ".log"}
+
+# Statements that can wrap a class or a definition. Their bodies are walked too,
+# so a def inside `if FEATURE:` or `try:` still appears in the outline.
+_NESTING = (
+    ast.If,
+    ast.Try,
+    ast.For,
+    ast.AsyncFor,
+    ast.While,
+    ast.With,
+    ast.AsyncWith,
+    ast.Match,
+)
 
 
 def _suggest(path: Path) -> str | None:
@@ -38,6 +52,18 @@ def _error(path: Path, msg: str) -> dict:
     if suggestion:
         out += f"\n\nDid you mean one of these?\n{suggestion}"
     return {"output": out, "error": True}
+
+
+def _sample(path: Path, limit: int = 1024) -> bytes:
+    """The first `limit` bytes of a file.
+
+    ``path.read_bytes()[:1024]`` looks like a bounded read but is not: it reads
+    the WHOLE file and throws almost all of it away. Summarizing a 20 MB file
+    therefore pulled 20 MB into memory for the binary check and 20 MB more for
+    the text, and a large file could exhaust memory.
+    """
+    with path.open("rb") as fh:
+        return fh.read(limit)
 
 
 def _is_binary(sample: bytes) -> bool:
@@ -75,6 +101,34 @@ def _first_docstring(node: Any) -> str:
     return first
 
 
+def _iter_defs(body, depth: int = 0, in_class: bool = False):
+    """Yield every class/def with its nesting depth.
+
+    Walking only the module body missed everything wrapped in a block, and
+    ``if FEATURE:`` around a class or ``try:`` around a function is ordinary
+    Python. The whole point of this tool is to hand the caller a line number to
+    jump to, so an anchor that is silently missing is worse than useless.
+
+    ``in_class`` is set while walking a class body: the caller already lists a
+    class's own methods, so yielding them again would list every method twice.
+    Classes nested inside a class are still reported.
+    """
+    for node in body or []:
+        if isinstance(node, ast.ClassDef):
+            yield node, depth
+            yield from _iter_defs(node.body, depth + 1, in_class=True)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if not in_class:
+                yield node, depth
+        elif isinstance(node, _NESTING):
+            for field in ("body", "orelse", "finalbody"):
+                yield from _iter_defs(getattr(node, field, None) or [], depth, in_class)
+            for handler in getattr(node, "handlers", None) or []:
+                yield from _iter_defs(handler.body, depth, in_class)
+            for case in getattr(node, "cases", None) or []:
+                yield from _iter_defs(case.body, depth, in_class)
+
+
 def _py_outline(source: str, path: Path) -> list[str]:
     try:
         import ast
@@ -83,23 +137,25 @@ def _py_outline(source: str, path: Path) -> list[str]:
     except SyntaxError as e:
         return [f"(could not parse as Python: {e})"]
     lines: list[str] = []
-    for node in tree.body:
+    for node, depth in _iter_defs(tree.body):
+        pad = "  " * depth
         if isinstance(node, ast.ClassDef):
             methods = [n for n in node.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
             doc = _first_docstring(node)
             with_doc = f" - {doc}" if doc else ""
-            lines.append(f"class {node.name} (line {node.lineno}, {len(methods)} methods){with_doc}")
+            lines.append(f"{pad}class {node.name} (line {node.lineno}, {len(methods)} methods){with_doc}")
             for m in methods[:8]:
                 mdoc = _first_docstring(m)
                 with_mdoc = f" - {mdoc}" if mdoc else ""
-                lines.append(f"  def {m.name} (line {m.lineno}){with_mdoc}")
+                lines.append(f"{pad}  def {m.name} (line {m.lineno}){with_mdoc}")
             if len(methods) > 8:
-                lines.append(f"  ... and {len(methods) - 8} more methods")
+                lines.append(f"{pad}  ... and {len(methods) - 8} more methods")
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             doc = _first_docstring(node)
             with_doc = f" - {doc}" if doc else ""
-            lines.append(f"def {node.name} (line {node.lineno}){with_doc}")
-        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            lines.append(f"{pad}def {node.name} (line {node.lineno}){with_doc}")
+    for node in tree.body:
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
             names = ", ".join(getattr(a, "name", "") or "" for a in node.names[:6])
             lines.append(f"import {names}")
     if not lines:
@@ -176,11 +232,19 @@ def _summarize(filePath: str) -> dict:
         return _error(path, "path does not exist.")
     if path.is_dir():
         return _error(path, "it is a directory — summarize_file reads one file at a time.")
+    if not path.is_file():
+        # A pipe, socket or device file would block here forever (/dev/zero
+        # never even ends), hanging the whole agent with no way out.
+        return _error(
+            path,
+            "it is not a regular file (a pipe, socket or device) — "
+            "summarize_file reads one regular text file at a time.",
+        )
 
     suffix = path.suffix.lower()
     if suffix in BINARY_BLOCKERS or suffix == "":
         try:
-            sample = path.read_bytes()[:1024]
+            sample = _sample(path)
         except OSError as e:
             return _error(path, str(e))
         if _is_binary(sample) or suffix in BINARY_BLOCKERS:
@@ -191,7 +255,7 @@ def _summarize(filePath: str) -> dict:
             )
     else:
         try:
-            sample = path.read_bytes()[:1024]
+            sample = _sample(path)
         except OSError as e:
             return _error(path, str(e))
         if _is_binary(sample):
@@ -226,17 +290,20 @@ def _summarize(filePath: str) -> dict:
         kind = "text"
         outline = _text_outline(lines)
 
-    previewed = [l for l in lines if l.strip()][:MAX_PREVIEW_LINES]
-    preview = "\n".join(
-        l if len(l) <= MAX_LINE_CHARS else l[: MAX_LINE_CHARS - 1] + "…"
-        for l in previewed
-    )
+    # Truncate once, and use the result. The old code built a truncated
+    # `preview` string, never used it, and then re-sliced the raw lines without
+    # the ellipsis — so long lines were cut mid-character with no sign of it.
+    previewed = [
+        (l if len(l) <= MAX_LINE_CHARS else l[: MAX_LINE_CHARS - 1] + "…")
+        for l in lines
+        if l.strip()
+    ][:MAX_PREVIEW_LINES]
 
     body = f"<{path}>\n<type>{kind}</type>\n<size>{size_s} | {total} lines</size>"
-    body += f"\n\nSTRUCTURE\n" + "\n".join("  " + o for o in outline)
-    if preview:
+    body += "\n\nSTRUCTURE\n" + "\n".join("  " + o for o in outline)
+    if previewed:
         body += f"\n\nPREVIEW (first {len(previewed)} non-empty lines)\n" + "\n".join(
-            f"  {l[:MAX_LINE_CHARS]}" for l in previewed
+            f"  {l}" for l in previewed
         )
     if len(body) > MAX_OUTPUT:
         body = body[:MAX_OUTPUT] + "\n… (summary capped at 8 KB)"

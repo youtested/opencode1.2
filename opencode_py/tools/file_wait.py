@@ -20,10 +20,8 @@ Interruptible via the engine's interrupt hook (ESC), bounded by `timeout`
 from __future__ import annotations
 
 import re
-import threading
 import time
 from pathlib import Path
-from typing import Any, Callable
 
 from .registry import Registry, Tool, schema_with
 
@@ -306,5 +304,4 @@ def _read_from(path: Path, offset: int) -> str:
 
 
 def _elapsed(deadline: float) -> str:
-    total = getattr(_elapsed, "_start", None)
     return "?.?"

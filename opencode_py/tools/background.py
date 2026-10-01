@@ -12,17 +12,14 @@ RULES (full guidance for maintainers; the sent schema is short):
 
 from __future__ import annotations
 
-import atexit
 import os
 import select
 import threading
 import time
-import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from ..globals import Path as GPath
 from .bash import _kill_proc_tree
 from .registry import Registry, Tool, schema_with
 
@@ -503,17 +500,6 @@ def list_tasks() -> dict[str, Any]:
     return {"output": "\n".join(lines), "metadata": {"count": len(tasks)}}
 
 
-@atexit.register
-def _kill_all_on_exit() -> None:  # pragma: no cover - process teardown
-    with _REG_LOCK:
-        snapshot = list(_TASKS.values())
-    for task in snapshot:
-        if task.running():
-            task.stopped = True
-            try:
-                _kill_proc_tree(task.proc, task.pgid)
-            except Exception:
-                pass
 
 
 _ACTIONS = ("start", "status", "read", "wait", "stop", "list")

@@ -49,7 +49,6 @@ def _get_type_to_scope() -> list[tuple[tuple[object, ...], str]]:
                 Operator,
                 Punctuation,
                 String,
-                Whitespace,
             )
         except Exception:  # pragma: no cover - pygments absent
             return []

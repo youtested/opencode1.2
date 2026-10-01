@@ -6,3 +6,11 @@ dist/
 *.egg-info/
 .pytest_cache/
 .ruff_cache/
+# error log: can contain message text and file paths, device-local only
+errors.log
+errors.log.*
+# build artifacts: release zips live in ~/ (kept as backups, not in the repo)
+*.zip
+# local debug scratch
+test.py
+raw_stream.txt

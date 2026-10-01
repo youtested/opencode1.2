@@ -170,7 +170,7 @@ def test_undo_restores_modified_created_deleted(env):
     assert (env / "a.py").read_text() == "one\ntwo\nthree\nfour\nfive\n"
     assert (env / "b.py").read_text() == "alpha\nbeta\n"
     assert not (env / "c.txt").exists()
-    assert "Patches left in journal: 0" in undo["output"]
+    assert "Patches left for this project: 0" in undo["output"]
 
 
 def test_undo_empty_journal_errors(env):

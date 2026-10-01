@@ -208,19 +208,6 @@ class ProxyPool:
         if not self._proxies and harvest:
             self._proxies = self._harvest_or_cache()
 
-    def _session_proxy(self, proxy: str) -> Optional[str]:
-        """Rewrite a session-based proxy URL to use the pool's current token.
-
-        Returns the token-flavored URL when ``proxy`` is session-based and a
-        token is active, else None (the proxy is used as-is).
-        """
-        if self._session_token is None:
-            return None
-        for marker in self.SESSION_MARKERS:
-            if marker in proxy:
-                # replace the token after the marker (any chars up to :@ or end)
-                return proxy
-        return None
 
     def mark_success(self, proxy: Optional[str]) -> None:
         """A fetch through ``proxy`` succeeded: reset its failure streak."""
@@ -540,12 +527,6 @@ def _shared_pool_get() -> "ProxyPool":
         return _shared_pool
 
 
-def _reset_shared_pool() -> None:
-    """Test hook: drop the cached shared pool so the next call rebuilds it."""
-    global _shared_pool, _shared_pool_sig
-    with _shared_pool_lock:
-        _shared_pool = None
-        _shared_pool_sig = ("", [])
 
 
 class UltimateBypass:
@@ -898,6 +879,3 @@ class UltimateBypass:
         return last_result
 
 
-def fetch_url(url: str, timeout: int = 20) -> Dict:
-    """Convenience wrapper returning the raw result dict."""
-    return UltimateBypass(timeout=timeout).fetch(url)

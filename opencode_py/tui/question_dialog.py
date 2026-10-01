@@ -22,7 +22,7 @@ from textual.binding import Binding
 from textual.containers import Vertical
 from textual.events import Key
 from textual.screen import ModalScreen
-from textual.widgets import Button, Input, Label, Static
+from textual.widgets import Button, Input, Static
 
 from ..question import QuestionInfo
 from .theme import active_theme

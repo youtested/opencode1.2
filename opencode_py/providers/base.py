@@ -127,30 +127,17 @@ class Provider(Protocol):
     ) -> None: ...
 
 
-def sanitize_function_name(name: str) -> str:
-    """Wire-safe function name for strict validators (Nemotron 400s on ``:``).
-
-    Only ``a-z, A-Z, 0-9, _, -`` allowed, max 64 chars. Lenient models accept
-    anything, strict ones reject the whole request — so sanitize on the wire.
-    """
-    import re
-
-    safe = re.sub(r"[^a-zA-Z0-9_-]", "_", str(name or ""))
-    safe = safe.strip("_-") or "tool"
-    return safe[:64]
+from ..util.schema import provider_schema as _provider_schema
+from ..util.schema import sanitize_function_name
 
 
 def tool_to_openai_schema(tool) -> dict[str, Any]:
     """Convert a registry Tool to an OpenAI function-calling JSON schema."""
-    try:
-        from ..tools.registry import _provider_schema as _clean
-    except Exception:  # pragma: no cover - import cycle fallback
-        _clean = lambda s: s  # noqa: E731
     return {
         "type": "function",
         "function": {
             "name": sanitize_function_name(tool.name),
             "description": tool.description,
-            "parameters": _clean(tool.parameters),
+            "parameters": _provider_schema(tool.parameters),
         },
     }

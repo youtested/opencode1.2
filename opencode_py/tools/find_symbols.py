@@ -1,9 +1,13 @@
 """find_symbols tool: code navigation (definitions, callers, deps).
 
 RULES (full guidance for maintainers; the sent schema is short):
-- Verbs: def/callers/refs/deps/imports/symbols (+ bare word = def).
+- Single-hop verbs: def/callers/refs/deps/imports/symbols (+ bare word = def).
+- Multi-hop verbs: impact/path/dead/cycles/communities/graphstats — these walk
+  the resolved graph in index/graph.py, so they follow a relationship across
+  files instead of reporting one file's contents at a time.
 - Indexed once, cached, refreshed incrementally — faster than grep+read.
-- Use BEFORE editing: jump to definition, check callers.
+- Use BEFORE editing: jump to definition, check callers, then `impact X` to
+  see what a change would break.
 """
 from __future__ import annotations
 
@@ -19,15 +23,19 @@ _DEFAULT_LIMIT = 60
 
 
 def tool() -> Tool:
-    description = """Name search across files (def/callers/refs/deps/imports/symbols). SECOND choice: if you have file+line use lsp first (0.4ms exact). Use this for name-only search, then read symbol= for the block. grep is plain text only."""
+    description = """Name search across files, plus multi-hop graph queries. SECOND choice: if you have file+line use lsp first (0.4ms exact). Single-hop: def/callers/refs/deps/imports/symbols. MULTI-HOP (follows relationships across files): 'impact X' = everything that breaks if X changes, 'path A to B' = the call chain, 'dead' = unreferenced defs, 'cycles' = circular imports, 'communities' = subsystems, 'graphstats' = graph health. Use this for name-only search, then read symbol= for the block. grep is plain text only."""
 
     def run(input: dict) -> dict:
         q = str(input.get("query") or "").strip()
         if not q:
             return {
                 "output": (
-                    "Empty query. Try: 'def run', 'callers _atomic_write', "
-                    "'deps tools/edit.py', 'imports write', 'symbols main.py'."
+                    "Empty query. Single-hop: 'def run', "
+                    "'callers _atomic_write', 'deps tools/edit.py', "
+                    "'imports write', 'symbols main.py'. "
+                    "Multi-hop: 'impact run_tool' (what breaks if it changes), "
+                    "'path run_tool to send' (the call chain), 'dead', "
+                    "'cycles', 'communities', 'graphstats'."
                 ),
                 "error": True,
             }
@@ -59,10 +67,16 @@ def tool() -> Tool:
                 "query": {
                     "type": "string",
                     "description": (
-                        'What to find, with an optional leading verb: '
-                        '"def run", "callers _atomic_write", "refs Registry", '
-                        '"deps open/opencode_py/tools/edit.py", '
-                        '"imports opencode_py.tools.write", "symbols bash.py".'
+                        'What to find, with an optional leading verb. '
+                        'Single-hop: "def run", "callers _atomic_write", '
+                        '"refs Registry", "deps open/opencode_py/tools/edit.py", '
+                        '"imports opencode_py.tools.write", "symbols bash.py". '
+                        'Multi-hop: "impact run_tool" (blast radius, everything '
+                        'that breaks if it changes), "path run_tool to send" '
+                        '(the call chain between two things), "dead" (defs '
+                        'nothing calls), "cycles" (circular imports), '
+                        '"communities" (which files group into which subsystem), '
+                        '"graphstats" (node/edge counts and confidence).'
                     ),
                 },
                 "root": {

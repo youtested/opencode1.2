@@ -41,7 +41,6 @@ class CommandPopup(ModalScreen[str]):
         return self.content is not None
 
     def compose(self) -> ComposeResult:
-        theme = active_theme()
         with Vertical(classes="cmd-popup"):
             yield Static(f"  /{self.cmd_name}  ", classes="cmd-popup-title")
             if self.previewed:

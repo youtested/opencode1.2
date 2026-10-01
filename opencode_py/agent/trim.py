@@ -110,26 +110,6 @@ def clear_spill(session_id: str) -> int:
         return 0
 
 
-def spill_stats() -> dict:
-    """(files, bytes) across all spill dirs. Never raises."""
-    try:
-        from ..globals import Path as _GP
-
-        root = _GP.data / "spill"
-    except Exception:
-        return {"files": 0, "bytes": 0}
-    files = 0
-    total = 0
-    try:
-        for p in root.rglob("*.txt"):
-            try:
-                files += 1
-                total += p.stat().st_size
-            except OSError:
-                continue
-    except OSError:
-        pass
-    return {"files": files, "bytes": total}
 
 
 def _receipt(name: str, content: str) -> str:
@@ -479,7 +459,6 @@ def request_prefix_key(system_prompt: str, tools: list[dict]) -> str:
     """
     try:
         import hashlib
-        import json
 
         names = sorted(
             str((t.get("function") or {}).get("name", "")) for t in (tools or []) if isinstance(t, dict)

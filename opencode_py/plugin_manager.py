@@ -218,15 +218,3 @@ def test_plugin(name: str, cfg: Any, worktree: str = "") -> str:
             pass
 
 
-def describe_target(target: str) -> str:
-    path = Path(str(target)).expanduser()
-    suffix = path.suffix.lower()
-    if suffix == ".py":
-        return "python hook/tool"
-    if suffix in (".js", ".mjs", ".cjs"):
-        return "javascript"
-    if suffix in (".ts", ".mts"):
-        return "typescript"
-    if " " in str(target):
-        return "shell command"
-    return "python module"

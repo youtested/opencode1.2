@@ -446,9 +446,6 @@ class AgentPicker(ModalScreen[str | None]):
             return name, custom
         return None
 
-    def _submit_name(self, value: str) -> None:
-        # legacy inline path (unused now that add/rename use AgentNameDialog)
-        self._refocus_list()
 
     def _refocus_list(self) -> None:
         try:

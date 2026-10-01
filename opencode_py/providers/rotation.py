@@ -34,9 +34,6 @@ def _is_rate_limit_message(message: str) -> bool:
     return is_rate_limit(message)
 
 
-def _fail_message(provider_id: str, error: Exception) -> str:
-    """Message for a surfaced failure; keeps prior lane failures for context."""
-    return f"{provider_id}: {error}"
 
 
 def build_read_timeout(read_seconds: float | None = None, model: str = "") -> httpx.Timeout:
@@ -372,7 +369,7 @@ class Rotation:
                 if index > 0 and on_notice:
                     on_notice(provider_id, model, last_reason or "provider error")
                 return provider_id, model
-            except ContextOverflowError as e:
+            except ContextOverflowError:
                 # History overflowed the window — every lane shares the same
                 # oversized history, so rotating would just hit the same wall.
                 # Propagate so the caller (agent loop) trims history and retries.
@@ -1401,17 +1398,6 @@ def _health_kick_bg(model_ids: list[str]) -> None:
             _health_bg_keys.discard(key)
 
 
-def _health_drain(timeout: float = 10.0) -> bool:
-    """Wait until all background health probes finish (tests only)."""
-    import time as _t
-    end = _t.monotonic() + max(0.1, timeout)
-    while _t.monotonic() < end:
-        with _health_lock:
-            if not _health_bg_keys:
-                return True
-        _t.sleep(0.02)
-    with _health_lock:
-        return not _health_bg_keys
 
 
 def check_zen_model_health(model_ids: list[str], ttl_seconds: int = HEALTH_TTL_SECONDS) -> dict[str, bool]:
@@ -1555,8 +1541,6 @@ def fetch_openrouter_models() -> list[dict]:
     The chosen default free model is always included even if the live list is
     unavailable or it happens to be missing.
     """
-    import time
-
     out: list[dict] = []
     default = FREE_DEFAULT_MODELS["openrouter"]
     seen: set[str] = set()
@@ -1684,7 +1668,7 @@ _model_list_cache_lock = threading.Lock()
 def _ctx_disk_path():
     try:
         from ..globals import Path as GPath
-        return Path(GPath.cache) / "model-context.json"
+        return GPath.cache / "model-context.json"
     except Exception:
         return None
 

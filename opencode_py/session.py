@@ -19,6 +19,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable
 
+from . import errors
 from .globals import Path as GPath
 
 # Serializes all session-body and index writes. save_session can be called
@@ -423,8 +424,16 @@ def save_session(
                 # atomic write failed — never lose the new body (best effort)
                 try:
                     path.write_text(text, encoding="utf-8")
-                except OSError:
-                    pass
+                except OSError as exc:
+                    # Both the atomic write and the fallback failed: this
+                    # session's body is NOT on disk. The .bak replica still
+                    # holds the previous good copy.
+                    errors.error(
+                        "session",
+                        f"could not write session {session.id} to {path}; "
+                        "this save is LOST (a .bak of the previous body exists)",
+                        exc,
+                    )
         try:
             if fp is not None:
                 _SAVE_PRINTS[session.id] = fp
@@ -677,9 +686,6 @@ def _stat_size(path: Path) -> int:
         return 0
 
 
-def _suggested(first_user: str) -> str:
-    text = first_user.strip()
-    return text[:60] if text else ""
 
 
 def _session_from_index(name: str, meta: dict[str, Any]) -> Session | None:

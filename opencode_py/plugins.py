@@ -338,8 +338,6 @@ class PluginDispatcher:
             return {"error": True, "output": f"plugin {spec.name}: cannot run {path}"}
         return self._run_command(spec, _shell_quote(node) + " " + _shell_quote(script), data)
 
-    def close_children(self) -> None:
-        self._closed = True
 
 
 class _MultiEventHook:

@@ -28,22 +28,6 @@ def parse_openai_tool_calls(assistant_message: dict[str, Any]) -> list[dict[str,
     return calls
 
 
-def parse_anthropic_tool_blocks(assistant_message: dict[str, Any]) -> list[dict[str, Any]]:
-    """Extract tool_use blocks from an Anthropic-style assistant message."""
-    calls = []
-    content = assistant_message.get("content")
-    if not isinstance(content, list):
-        return calls
-    for block in content:
-        if isinstance(block, dict) and block.get("type") == "tool_use":
-            calls.append(
-                {
-                    "id": block.get("id", ""),
-                    "name": block.get("name", ""),
-                    "arguments": json.dumps(block.get("input", {})),
-                }
-            )
-    return calls
 
 
 def parse_arguments(arguments: str | dict) -> dict:
@@ -116,54 +100,5 @@ def anthropic_assistant_from_calls(calls: list[dict[str, Any]]) -> dict[str, Any
     return {"role": "assistant", "content": content}
 
 
-def anthropic_tool_result_message(call_id: str, output: str, error: bool = False) -> dict[str, Any]:
-    return {
-        "role": "user",
-        "content": [
-            {
-                "type": "tool_result",
-                "tool_use_id": call_id,
-                "content": output if not error else f"[tool error] {output}",
-                "is_error": error,
-            }
-        ],
-    }
 
 
-def convert_openai_to_anthropic(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Convert OpenAI-style history to Anthropic messages (used if needed)."""
-    out: list[dict[str, Any]] = []
-    for msg in messages:
-        role = msg.get("role")
-        if role == "system":
-            out.append({"role": "user", "content": msg.get("content", "")})
-            out.append({"role": "assistant", "content": "Understood."})
-            continue
-        if role == "tool":
-            tool_result: dict[str, Any] = {
-                "type": "tool_result",
-                "tool_use_id": msg.get("tool_call_id", ""),
-                "content": msg.get("content", ""),
-            }
-            if msg.get("is_error"):
-                tool_result["is_error"] = True
-            out.append(
-                {
-                    "role": "user",
-                    "content": [tool_result],
-                }
-            )
-            continue
-        if role == "assistant" and msg.get("tool_calls"):
-            out.append(anthropic_assistant_from_calls(parse_openai_tool_calls(msg)))
-            continue
-        if role == "assistant":
-            content = msg.get("content")
-            if not content:
-                continue
-            out.append({"role": "assistant", "content": content})
-            continue
-        if role == "user":
-            out.append({"role": "user", "content": msg.get("content", "")})
-            continue
-    return out

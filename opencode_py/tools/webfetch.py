@@ -176,160 +176,8 @@ class _MDParser(_HTMLParser):
             return
         self.out.append("\n" * n)
 
-    def handle_starttag(self, tag: str, attrs: list) -> None:
-        t = tag.lower()
-        d = {k.lower(): (v or "") for k, v in attrs}
-        if t in ("script", "style", "noscript", "template", "svg"):
-            self._skip += 1
-            return
-        if self._skip:
-            return
-        if t == "title":
-            self._in_title = True
-            return
-        if t == "meta":
-            name = (d.get("name") or d.get("property") or "").lower()
-            if name in ("description", "og:description", "twitter:description"):
-                if d.get("content") and not self.description:
-                    self.description = d["content"].strip()[:500]
-            return
-        if t == "base" and d.get("href") and not self.base_url:
-            self.base_url = d["href"]
-            return
-        if t in ("h1", "h2", "h3", "h4", "h5", "h6"):
-            self._newline(2)
-            self.out.append("#" * int(t[1]) + " ")
-        elif t in ("p", "div", "section", "article", "main", "header"):
-            self._newline(2)
-        elif t == "br":
-            self.out.append("\n")
-        elif t == "hr":
-            self._newline(2)
-            self.out.append("---")
-            self._newline(2)
-        elif t == "li":
-            self._newline(1)
-            self.out.append("- ")
-        elif t == "a":
-            href = d.get("href", "").strip()
-            if href and not href.lower().startswith(("javascript:", "mailto:")):
-                try:
-                    from urllib.parse import urljoin
 
-                    href = urljoin(self.base_url, href)
-                except Exception:
-                    pass
-                self._link = href
-                self._link_text = []
-            else:
-                self._link = None
-        elif t in ("strong", "b"):
-            self._emit("**")
-        elif t in ("em", "i"):
-            self._emit("*")
-        elif t == "code" and not self._in_pre:
-            self._emit("`")
-        elif t == "pre":
-            self._in_pre = True
-            self._newline(2)
-            self.out.append("```\n")
-        elif t == "blockquote":
-            self._newline(2)
-            self.out.append("> ")
-        elif t == "tr":
-            self._newline(1)
-        elif t in ("td", "th"):
-            self.out.append(" | " if self._in_cell else "")
-            self._in_cell = True
-        elif t == "table":
-            self._newline(2)
-            self._in_cell = False
-        elif t == "img":
-            alt = d.get("alt", "").strip()
-            src = d.get("src", "").strip()
-            if src:
-                try:
-                    from urllib.parse import urljoin
 
-                    src = urljoin(self.base_url, src)
-                except Exception:
-                    pass
-                self._newline(1)
-                self.out.append("![%s](%s)" % (alt, src))
-                self._newline(1)
-        elif t == "form":
-            self._form = {
-                "action": d.get("action", "").strip(),
-                "method": (d.get("method") or "get").strip().lower() or "get",
-                "inputs": [],
-            }
-        elif t in ("input", "select", "textarea", "button") and self._form is not None:
-            name = (d.get("name") or d.get("id") or d.get("type") or t).strip()
-            if name:
-                self._form["inputs"].append(name[:80])
-
-    def handle_endtag(self, tag: str) -> None:
-        t = tag.lower()
-        if t in ("script", "style", "noscript", "template", "svg"):
-            self._skip = max(0, self._skip - 1)
-            return
-        if self._skip:
-            return
-        if t == "title":
-            self._in_title = False
-            return
-        if t in ("h1", "h2", "h3", "h4", "h5", "h6", "p", "div", "tr", "table"):
-            self._newline(2)
-            self._in_cell = False
-        elif t == "li":
-            self._newline(1)
-        elif t == "a" and self._link is not None:
-            text = "".join(self._link_text).strip()
-            href = self._link
-            self._link = None
-            self._link_text = []
-            if text:
-                if text == href:
-                    self.out.append(text)
-                else:
-                    self.out.append("[%s](%s)" % (text, href))
-            else:
-                self.out.append(href)
-        elif t in ("strong", "b"):
-            self._emit("**")
-        elif t in ("em", "i"):
-            self._emit("*")
-        elif t == "code" and not self._in_pre:
-            self._emit("`")
-        elif t == "pre":
-            self._in_pre = False
-            self.out.append("\n```")
-            self._newline(2)
-        elif t == "form" and self._form is not None:
-            try:
-                from urllib.parse import urljoin
-
-                if self._form.get("action"):
-                    self._form["action"] = urljoin(self.base_url, self._form["action"])
-            except Exception:
-                pass
-            if self._form.get("inputs"):
-                self._form["inputs"] = self._form["inputs"][:20]
-            self.forms.append(self._form)
-            self._form = None
-
-    def handle_data(self, data: str) -> None:
-        if self._skip:
-            return
-        if self._in_title:
-            self.title += data.strip()
-            return
-        if not data or (not self._in_pre and data.strip() == ""):
-            return
-        if self._in_pre:
-            self._emit(data)
-        else:
-            self._emit(re.sub(r"\s+", " ", data))
 
     def text(self) -> str:
         raw = "".join(self.out)
@@ -731,7 +579,6 @@ def _webfetch(
             redirects_followed = 0
             parts: list[bytes] = []
             size = 0
-            hit_cap = False
             status = 0
             content_type = ""
             while True:
@@ -775,8 +622,7 @@ def _webfetch(
                         return interrupted()
                     parts = []
                     size = 0
-                    hit_cap = False
-                    # Register the response so an interrupt (2nd ESC / Ctrl+C) can
+                    # Register the response so an interrupt (ESC / Ctrl+C) can
                     # force-close the socket and wake a blocked read instantly;
                     # the tool then polls the shared interrupt flag and aborts.
                     registered = registry is not None
@@ -792,7 +638,6 @@ def _webfetch(
                                 return interrupted()
                             room = MAX_RESPONSE_SIZE - size
                             if room <= 0:
-                                hit_cap = True
                                 truncated_note = f"\n\n[Response truncated at {MAX_RESPONSE_SIZE} bytes]"
                                 # Stop reading and release the connection immediately.
                                 # Draining the remainder (old behavior) lets an endless
@@ -1104,7 +949,7 @@ def webfetch_many(
             ex.submit(_fetch_one, u, format, timeout, limit, is_interrupted, registry): i
             for i, u in enumerate(urls)
         }
-        # Each fetch polls the shared interrupt flag (2nd ESC / Ctrl+C) and
+        # Each fetch polls the shared interrupt flag (ESC / Ctrl+C) and
         # aborts itself; an interrupt stops the turn without waiting for every
         # slow URL. Remaining in-flight workers check the flag on their own and
         # return immediately.

@@ -67,22 +67,11 @@ class SymbolCache:
             tmp = self.index_path.with_suffix(".json.tmp")
             try:
                 tmp.write_text(json.dumps(payload), encoding="utf-8")
-                try:
-                    with open(tmp, "rb") as fh:
-                        try: os.fsync(fh.fileno())
-                        except OSError: pass
-                except OSError:
-                    pass
+                # os.replace is atomic, so a reader never sees a half-written
+                # cache; the fsyncs only bought durability across a power cut,
+                # which a derived cache does not need — it just rebuilds. Two
+                # fsyncs cost ~0.22s per save on a phone.
                 os.replace(tmp, self.index_path)
-                try:
-                    dfd = os.open(self.index_path.parent, os.O_RDONLY)
-                    try: os.fsync(dfd)
-                    except OSError: pass
-                    finally:
-                        try: os.close(dfd)
-                        except OSError: pass
-                except OSError:
-                    pass
             except OSError:
                 try: tmp.unlink()
                 except OSError: pass

@@ -456,10 +456,6 @@ class AgentPromptPreview(ModalScreen[None]):
             pass
 
     def _copy_text(self) -> str:
-        try:
-            from textual.widgets import OptionList as _OL  # noqa
-        except Exception:
-            pass
         return "\n\n".join(text for _label, text in self._blocks)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
@@ -561,7 +557,7 @@ class AgentMdPopup(ModalScreen[None]):
                 )
             if not files:
                 opts.append(
-                    Option(f"[dim]    (no .md files)[/]", id=f"__hdr__{hdr}", disabled=True)
+                    Option("[dim]    (no .md files)[/]", id=f"__hdr__{hdr}", disabled=True)
                 )
                 hdr += 1
         opts.append(Option("＋ Add agent.md file", id="__add__"))

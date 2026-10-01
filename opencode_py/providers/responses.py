@@ -14,7 +14,6 @@ from __future__ import annotations
 import json
 from typing import Any, Callable, TYPE_CHECKING
 
-from ..util.net import force_close_response
 from ..util.sse import SSEDecoder
 from .base import ContextOverflowError, ProviderError, ProviderEvent, RateLimitError, StreamInterrupted, ToolCall, Usage
 from .classify import is_context_overflow as _classify_context_overflow

@@ -22,7 +22,7 @@ def _lazy(mod_name: str, attr: str = "tool", **kwargs: Any) -> Any:
 
     return _factory
 
-TOOL_NAMES = ["bash", "read", "glob", "grep", "find_symbols", "lsp", "edit", "write", "apply_patch", "background_task", "browser", "phone", "screen_view", "device", "history_search", "checkpoint", "verify", "quick_calc", "speak", "webfetch", "webfetch_many", "websearch", "todowrite", "task", "question", "skill", "remember", "summarize_file"]
+TOOL_NAMES = ["bash", "read", "glob", "grep", "find_symbols", "lsp", "ide", "edit", "write", "apply_patch", "background_task", "browser", "phone", "screen_view", "device", "history_search", "checkpoint", "verify", "quick_calc", "speak", "webfetch", "webfetch_many", "websearch", "todowrite", "task", "question", "skill", "remember", "summarize_file"]
 
 # Process-wide cache of running MCP servers keyed by (name, command, args).
 # build_registry() runs once per engine AND once per spawned sub-agent; without
@@ -180,6 +180,7 @@ def build_registry(cfg: Config | None = None) -> Registry:
     from . import find_symbols as find_symbols_mod
     from . import glob as glob_mod
     from . import grep as grep_mod
+    from . import ide as ide_mod
     from . import lsp as lsp_mod
     from . import read as read_mod
 
@@ -193,6 +194,7 @@ def build_registry(cfg: Config | None = None) -> Registry:
     registry.register(glob_mod.tool())
     registry.register(grep_mod.tool(cfg))
     registry.register(find_symbols_mod.tool())
+    registry.register(ide_mod.tool())
     registry.register(lsp_mod.tool())
     registry.register(edit_mod.tool())
     registry.register_lazy("write", _lazy("write"))
@@ -422,10 +424,10 @@ def _load_mcp_servers(registry: Registry, cfg: Config | None) -> None:
 def _sanitize_tool_name(name: str) -> str:
     """Make a tool name safe for strict OpenAI-compatible validators.
 
-    Single source of truth lives in ``providers.base.sanitize_function_name``;
+    Single source of truth lives in ``util.schema.sanitize_function_name``;
     this wrapper keeps the historical import path working.
     """
-    from ..providers.base import sanitize_function_name as _san
+    from ..util.schema import sanitize_function_name as _san
 
     return _san(name)
 

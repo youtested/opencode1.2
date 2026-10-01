@@ -1749,3 +1749,49 @@ def test_auto_continue_queued_user_wins(monkeypatch):
     loop.run_turn("hi")
     users = [m.get("content") for m in loop.get_history() if m.get("role") == "user"]
     assert users[1] == "REAL-USER-MSG"
+
+
+def test_auto_continue_stops_at_the_nudge_limit(monkeypatch):
+    """The nudge cap must actually stop the nudges.
+
+    Existing tests only assert that nudges *happen* (`rot.calls >= 2`), which
+    still passes if the cap is removed entirely — this one pins the stop.
+    """
+    import opencode_py.agent.loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "AUTO_CONTINUE_WAIT_S", 0.0)
+    monkeypatch.setattr(loop_mod, "AUTO_CONTINUE_MAX_NUDGES", 2)
+    rot = FakeRotation([
+        lambda on: on(ProviderEvent(kind="text_delta", text="a")),
+        lambda on: on(ProviderEvent(kind="text_delta", text="b")),
+        lambda on: on(ProviderEvent(kind="text_delta", text="c")),
+        lambda on: on(ProviderEvent(kind="text_delta", text="d")),
+        lambda on: on(ProviderEvent(kind="text_delta", text="e")),
+    ])
+    loop = make_loop(rot)
+    loop.cfg.auto_continue = True
+    loop.run_turn("hi")
+
+    nudges = [m for m in loop.get_history()
+              if isinstance(m, dict)
+              and m.get("content") == loop_mod.AUTO_CONTINUE_MSG]
+    assert len(nudges) == 2, f"expected exactly 2 nudges, got {len(nudges)}"
+
+
+def test_auto_continue_nudge_limit_of_one_stops_after_one(monkeypatch):
+    import opencode_py.agent.loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "AUTO_CONTINUE_WAIT_S", 0.0)
+    monkeypatch.setattr(loop_mod, "AUTO_CONTINUE_MAX_NUDGES", 1)
+    rot = FakeRotation([
+        lambda on: on(ProviderEvent(kind="text_delta", text="a")),
+        lambda on: on(ProviderEvent(kind="text_delta", text="b")),
+    ])
+    loop = make_loop(rot)
+    loop.cfg.auto_continue = True
+    loop.run_turn("hi")
+
+    nudges = [m for m in loop.get_history()
+              if isinstance(m, dict)
+              and m.get("content") == loop_mod.AUTO_CONTINUE_MSG]
+    assert len(nudges) == 1, f"expected exactly 1 nudge, got {len(nudges)}"

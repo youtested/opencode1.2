@@ -11,7 +11,6 @@ from __future__ import annotations
 import re
 import threading
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Callable
 
 # how many identical tool calls with identical input before it's a "doom loop"
@@ -219,8 +218,6 @@ def agent_spec(cfg: Any, agent: str) -> dict[str, Any]:
         return {}
 
 
-def is_custom_agent(cfg: Any, agent: str) -> bool:
-    return agent not in BUILTIN_AGENTS and bool(agent_spec(cfg, agent))
 
 
 def agent_description(cfg: Any, agent: str) -> str:
@@ -336,19 +333,6 @@ def agent_md_path(agent: str, name: str) -> Any:
     return agent_md_dir(agent) / safe
 
 
-def _safe_rel(path: Any, base: Any) -> str:
-    """Short display path (`~/.config/...`) — never leaks temp dirs."""
-    try:
-        s = str(path)
-        home = str(base)
-        import os as _os
-
-        h = _os.path.expanduser("~")
-        if s.startswith(h):
-            return "~" + s[len(h):]
-        return s
-    except Exception:
-        return str(path)
 
 
 def short_display_path(path: str, limit: int = 60) -> str:

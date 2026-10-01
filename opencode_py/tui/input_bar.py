@@ -363,10 +363,6 @@ class InputBar(Vertical):
         self._render_title()
         self._render_meta()
 
-    def set_rotation_locked(self, locked: bool) -> None:
-        """Flip the model-lock state and re-render the meta row's lock dot."""
-        self.rotation_locked = bool(locked)
-        self._render_meta()
 
     def _render_title(self) -> None:
         """Fixed `▣ Build · <picked model> · 1m 12s` line at the top of the prompt box.
@@ -543,7 +539,9 @@ class InputBar(Vertical):
         matches = [
             c["name"]
             for c in self.commands
-            if not c.get("hidden") and c["name"].lower().startswith(query)
+            if not c.get("hidden")
+            and (query or not c.get("custom"))
+            and c["name"].lower().startswith(query)
         ]
         if not matches:
             self._clear_suggestions()
@@ -643,8 +641,6 @@ class InputBar(Vertical):
         self.post_message(CommandSelected(name, desc))
         return
 
-    def _popup_commands(self) -> list[dict[str, str]]:
-        return [c for c in self.commands if not c.get("custom")]
 
     # -- events -----------------------------------------------------------
     def on_text_area_changed(self, event: TextArea.Changed) -> None:

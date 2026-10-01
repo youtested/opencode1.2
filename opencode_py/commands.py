@@ -932,6 +932,7 @@ def build_registry() -> CommandRegistry:
         Command("new", [], "Start a new session", _new, preview=False),
         Command("permissions", [], "Show permission config", _permissions),
         Command("plugins", [], "Manage plugins and event hooks", _plugins, preview=False),
+        Command("provider", [], "Manage provider keys and models", _providers, preview=False),
         # NB: no "sessions" alias here — /sessions is its own command below;
         # aliasing it to /resume was a silent-collision trap.
         Command("resume", [], "Resume a session", _resume),
@@ -981,6 +982,23 @@ def _commands(ctx: CommandContext, args: str) -> None:
         ctx.reply(f"Removed /{name}." if _cm.remove_command(name, worktree, False) else f"No command /{name} found.")
         return
     ctx.reply("Usage: /commands [list|add <name>|on <name>|off <name>|remove <name>] — or open the popup with no arguments")
+
+
+def _providers(ctx: CommandContext, args: str) -> None:
+    from . import provider_manager as _pm
+    from .auth import Auth
+
+    parts = (args or "list").strip().split()
+    sub = parts[0].lower() if parts else "list"
+    auth = Auth()
+    if sub in ("list", "ls"):
+        rows = _pm.rows(auth)
+        ctx.reply("Providers:\n" + "\n".join(f"  {r['id']}: {r['status']}" for r in rows))
+        return
+    if sub in ("key", "login") and len(parts) >= 2:
+        ctx.reply(f"Open /provider for {parts[1]} settings.")
+        return
+    ctx.reply("Usage: /provider [list] — open the popup to add keys, check status, and refresh models.")
 
 
 def _cleanup(ctx: CommandContext, args: str) -> None:
@@ -1126,6 +1144,3 @@ def handle_command(registry: CommandRegistry, ctx: CommandContext, line: str) ->
 
 
 # attach registry to context convenience
-def attach_registry(reg: CommandRegistry, ctx: CommandContext) -> CommandContext:
-    ctx.registry = reg  # type: ignore[attr-defined]
-    return ctx

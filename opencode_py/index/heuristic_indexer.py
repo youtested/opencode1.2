@@ -67,21 +67,32 @@ def _build_javascript() -> LangRule:
 
 
 def _build_c() -> LangRule:
+    # C and C++ share a rule set; the differences (class/namespace/template) are
+    # additive, so one set keeps them consistent. `cpp` is registered separately
+    # only to advertise the extra kinds and enable the C++ decl pass.
     decls = [
         ("macro", re.compile(r"(?m)^\s*#\s*define\s+" + _id(NAME))),
         ("struct", re.compile(r"(?m)^\s*(?:typedef\s+)?struct\s+" + _id(NAME))),
         ("struct", re.compile(r"(?m)^\s*typedef\s+struct\s*\{")),
-        ("class", re.compile(r"(?m)^\s*(?:typedef\s+)?class\s+" + _id(NAME))),
-        ("enum", re.compile(r"(?m)^\s*enum\s+" + _id(NAME))),
-        ("union", re.compile(r"(?m)^\s*union\s+" + _id(NAME))),
+        ("class", re.compile(r"(?m)^\s*(?:template\s*<[^>]*>\s*)?(?:typedef\s+)?class\s+" + _id(NAME))),
+        ("enum", re.compile(r"(?m)^\s*enum(?:\s+class)?\s+" + _id(NAME))),
+        ("union", re.compile(r"(?m)^\s*(?:typedef\s+)?union\s+" + _id(NAME))),
         ("type", re.compile(r"(?m)^\s*typedef\s+\w+(?:\s*\*)?\s+" + _id(NAME))),
-        ("function", re.compile(r"(?m)^\s*(?:[\w:]+(?:\s*[*&])?\s+)+" + _id(NAME) + r"\s*\([^;]*\)\s*(?:\{|=\s*default)")),
+        # NO function pattern here on purpose. Matching a parameter list with a
+        # regex needs a nested quantifier, which backtracks catastrophically on
+        # the long prototype lines real headers contain (a 2.7k-line GL header
+        # took minutes). _c_decl_map finds C/C++ functions by scanning to the
+        # first `(` and inspecting the tail, which is linear and exact enough.
     ]
     imports = [re.compile(r"""^\s*#\s*include\s*[<"]([^>"\n]+)[>"]""")]
     keywords = frozenset(
-        "auto break case char const continue default do double else enum extern "
-        "float for goto if inline int long register return short signed sizeof "
-        "static struct switch typedef union unsigned void volatile while".split()
+        "alignas alignof auto break case char class const constexpr continue "
+        "decltype default delete do double else enum explicit extern false float "
+        "for friend goto if inline int long mutable namespace new noexcept nullptr "
+        "operator private protected public register reinterpret_cast return short "
+        "signed sizeof static static_assert static_cast struct switch template this "
+        "throw true try typedef typeid typename union unsigned using virtual void "
+        "volatile while".split()
     )
     return LangRule(
         "c", keywords, decls, imports,
@@ -90,6 +101,146 @@ def _build_c() -> LangRule:
                       "f": "function", "p": "function", "m": "member",
                       "v": "variable", "d": "macro", "t": "type"},
     )
+
+
+# tokens that can sit between a return type and the name in a declaration;
+# keeps the function matcher from reporting `if (x) {` as a function
+_C_DECL_NOISE = frozenset(
+    "if else for while switch return sizeof case do goto break continue "
+    "defined __attribute__ __asm__ asm _Alignof alignof static_assert".split()
+)
+
+# a declaration is: [modifiers/type tokens] name ( ... ) [; { or = initialiser]
+_C_FUNC_HEAD = re.compile(
+    r"^(?P<pre>[A-Za-z_][\w:]*|struct|enum|union|class|const|static|extern|inline|"
+    r"virtual|explicit|constexpr|thread_local|__inline__|__inline|_Noreturn|"
+    r"restrict|__restrict|long|short|unsigned|signed)"
+    r"(?P<rest>[\s\*&:<>,()\[\]\w]{0,300}?)\b(?P<name>[A-Za-z_]\w*)\s*\(")
+
+# what may follow a parameter list: a terminator, a comma, or a qualifier
+_C_TAIL = re.compile(r"^[^;{}\n]{0,300}?\)\s*(?:;|\{|=|,|\)|const\b|noexcept\b|override\b)")
+
+
+def _join_continuations(lines: list[str], limit: int = 40,
+                        max_chars: int = 2000) -> list[tuple[int, str]]:
+    """Merge lines that continue into one logical declaration.
+
+    Real C splits prototypes across lines:
+        extern int  foo (int a,
+                         int b);
+    A line-anchored regex cannot see that, and headers are mostly like it.
+
+    Only *parentheses* join. Braces must not: a class body is a sequence of
+    separate member declarations, so joining across `{` would fuse a whole
+    class into one string and hide every member but the first. It also made a
+    2.7k-line header one ~100KB "line" whose nested-quantifier match then ran
+    for minutes.
+
+    `max_chars` is a second backstop so an unbalanced-paren file cannot build an
+    unbounded string either.
+    """
+    out: list[tuple[int, str]] = []
+    buf: list[str] = []
+    size = 0
+    start = 0
+    depth = 0
+    for i, raw in enumerate(lines, 1):
+        if depth <= 0:
+            start = i
+            buf = [raw]
+            size = len(raw)
+        else:
+            buf.append(raw)
+            size += len(raw) + 1
+        if raw.rstrip().endswith("\\"):
+            depth += 1
+        else:
+            depth += raw.count("(") - raw.count(")")
+        if depth <= 0 or len(buf) >= limit or size >= max_chars:
+            out.append((start, " ".join(x.strip() for x in buf)))
+            buf = []
+            size = 0
+            depth = 0
+    if buf:
+        out.append((start, " ".join(x.strip() for x in buf)))
+    return out
+
+
+def _c_decl_map(lines: list[str], lang_id: str) -> dict[int, tuple[str, str, int]]:
+    """start line -> (kind, name, end line) for C/C++ declarations.
+
+    A dedicated pass rather than the shared per-line loop, because a declaration
+    can span lines. The caller consumes the map from the normal loop, so refs,
+    imports and spans keep behaving exactly as before.
+    """
+    out: dict[int, tuple[str, str, int]] = {}
+    kws = LANG_RULES["c"].keywords
+    for start, text in _join_continuations(lines):
+        s = text.strip()
+        if not s or s.startswith("#"):
+            if s.startswith("#"):
+                m = re.match(r"^#\s*define\s+(?P<name>[A-Za-z_]\w*)", s)
+                if m:
+                    out.setdefault(start, ("macro", m.group("name"), start))
+            continue
+        end_line = start + text.count(";")
+        if s.startswith("typedef"):
+            # typedef ret (*NAME)(args);  function-pointer alias
+            m = re.match(r"^typedef\s+[\w:*\s<>,]*\(\s*\*\s*(?P<name>[A-Za-z_]\w*)\s*\)", s)
+            if m and m.group("name") not in kws:
+                out.setdefault(start, ("type", m.group("name"), start))
+                continue
+            # typedef struct Foo Bar;   alias of a tag
+            m = re.match(r"^typedef\s+(?:struct|union|enum)(?:\s+class)?\s+"
+                         r"[A-Za-z_]\w*\s+(?P<name>[A-Za-z_]\w*)\s*[;\[]", s)
+            if m and m.group("name") not in kws:
+                out.setdefault(start, ("type", m.group("name"), start))
+                continue
+            # typedef ret NAME;         simple alias
+            m = re.match(r"^typedef\s+[\w:*\s<>,]+?\**\s*(?P<name>[A-Za-z_]\w*)\s*(?:\[[^\]]*\])?\s*;$", s)
+            if m and m.group("name") not in kws:
+                out.setdefault(start, ("type", m.group("name"), start))
+                continue
+        m = re.match(r"^(?:typedef\s+)?(?:struct|union)\s+(?P<name>[A-Za-z_]\w*)", s)
+        if m and m.group("name") not in kws:
+            out.setdefault(start, ("struct", m.group("name"), start))
+            continue
+        m = re.match(r"^(?:template\s*<[^>]*>\s*)?(?:typedef\s+)?enum(?:\s+class)?\s+"
+                     r"(?P<name>[A-Za-z_]\w*)", s)
+        if m and m.group("name") not in kws:
+            out.setdefault(start, ("enum", m.group("name"), start))
+            continue
+        m = re.match(r"^(?:template\s*<[^>]*>\s*)?(?:typedef\s+)?class\s+"
+                     r"(?P<name>[A-Za-z_]\w*)", s)
+        if m and m.group("name") not in kws:
+            out.setdefault(start, ("class", m.group("name"), start))
+            continue
+        if lang_id == "cpp":
+            m = re.match(r"^namespace\s+(?P<name>[A-Za-z_]\w*)", s)
+            if m and m.group("name") not in kws:
+                out.setdefault(start, ("namespace", m.group("name"), start))
+                continue
+        m = _C_FUNC_HEAD.match(s)
+        if m:
+            name = m.group("name")
+            if (name not in kws and name not in _C_DECL_NOISE
+                    and m.group("pre") not in _C_DECL_NOISE):
+                tail = s[m.end():]
+                # bounded scan: `[^;{]*` followed by `\)` backtracks badly on a
+                # long parameter list, and a declaration's tail is short
+                if _C_TAIL.match(tail):
+                    out.setdefault(start, ("function", name, end_line))
+    return out
+
+
+def _build_cpp() -> LangRule:
+    rule = _build_c()
+    decls = list(rule.decls) + [
+        ("namespace", re.compile(r"(?m)^\s*namespace\s+" + _id(NAME))),
+    ]
+    return LangRule("cpp", rule.keywords, decls, rule.imports,
+                    comment=rule.comment, ctags_kinds=rule.ctags_kinds)
+
 
 
 def _build_java() -> LangRule:
@@ -203,14 +354,19 @@ def _build_csharp() -> LangRule:
 
 def _build_swift() -> LangRule:
     mod = r"(?:(?:public|private|internal|fileprivate|open|static|class|final|override|async|mutating|nonmutating|throws?|rethrows)\s+)*"
+    # The modifier group must be repeatable AND optional. It used to allow
+    # exactly one modifier and required one, so `public final class Store` and
+    # a bare `struct Config` were both missed — the two most common shapes.
+    vis = r"(?:(?:public|private|internal|fileprivate|open|final)\s+)*"
     decls = [
         ("function", re.compile(r"(?m)^\s*" + mod + r"func\s+" + _id(NAME))),
-        ("class", re.compile(r"(?m)^\s*(?:public|private|internal|fileprivate|open|final)\s*class\s+" + _id(NAME))),
-        ("struct", re.compile(r"(?m)^\s*(?:public|private|internal|fileprivate|open)\s*struct\s+" + _id(NAME))),
-        ("enum", re.compile(r"(?m)^\s*(?:public|private|internal|fileprivate|open)\s*enum\s+" + _id(NAME))),
-        ("protocol", re.compile(r"(?m)^\s*(?:public|private|internal|fileprivate|open)\s*protocol\s+" + _id(NAME))),
-        ("extension", re.compile(r"(?m)^\s*(?:public|private|internal|fileprivate|open)\s*extension\s+" + _id(NAME))),
-        ("type", re.compile(r"(?m)^\s*(?:public|private|internal|fileprivate|open)\s*typealias\s+" + _id(NAME))),
+        ("class", re.compile(r"(?m)^\s*" + vis + r"class\s+" + _id(NAME))),
+        ("struct", re.compile(r"(?m)^\s*" + vis + r"struct\s+" + _id(NAME))),
+        ("enum", re.compile(r"(?m)^\s*" + vis + r"enum\s+" + _id(NAME))),
+        ("protocol", re.compile(r"(?m)^\s*" + vis + r"protocol\s+" + _id(NAME))),
+        ("extension", re.compile(r"(?m)^\s*" + vis + r"extension\s+" + _id(NAME))),
+        ("type", re.compile(r"(?m)^\s*" + vis + r"typealias\s+" + _id(NAME))),
+        ("variable", re.compile(r"(?m)^\s*" + vis + r"(?:static\s+)?(?:let|var)\s+" + _id(NAME))),
     ]
     imports = [re.compile(r"^\s*import\s+([\w.]+)")]
     keywords = frozenset(
@@ -274,8 +430,13 @@ def _build_lua() -> LangRule:
 
 
 def _build_ruby() -> LangRule:
+    # `def self.run` and `def Klass.run` are singleton/class methods, very
+    # common in Ruby. Without an optional receiver the symbol was recorded under
+    # the *receiver* name, so a file with several `def self.x` produced several
+    # symbols all called `self` and `x` was never indexed at all.
+    recv = r"(?:self\.|[A-Z]\w*(?:::\w+)*\.|[A-Za-z_@]\w*\.|[A-Z]\w*(?:::\w+)*::)?"
     decls = [
-        ("function", re.compile(r"(?m)^\s*def\s+" + _id(r"[A-Za-z_]\w*[?!]?"))),
+        ("function", re.compile(r"(?m)^\s*def\s+" + recv + _id(r"[A-Za-z_]\w*[?!=]?"))),
         ("class", re.compile(r"(?m)^\s*class\s+" + _id(r"[A-Za-z_]\w*(?:::\w+)*"))),
         ("module", re.compile(r"(?m)^\s*module\s+" + _id(r"[A-Za-z_]\w*(?:::\w+)*"))),
         ("constant", re.compile(r"(?m)^\s*" + _id(r"[A-Z][A-Z0-9_]*") + r"\s*=")),
@@ -441,6 +602,7 @@ for _lang, _builder in {
     "bash": _build_shell,
     "fish": _build_fish,
     "generic": _build_generic,
+    "cpp": _build_cpp,
 }.items():
     LANG_RULES[_lang] = _builder()
 
@@ -486,6 +648,18 @@ def index_file(
     imports: list[ImportRecord] = []
     refs: list[Ref] = []
     go_in_import_block = False
+    # C/C++ declarations get their own pass because they can span lines; the
+    # map is keyed by the line a declaration starts on, so the loop below keeps
+    # its original per-line behaviour for everything else.
+    cdecls = _c_decl_map(lines, lang_id) if lang_id in ("c", "cpp") else {}
+    # Lazily-built comment-stripped view of the whole file, shared by the
+    # anonymous-struct branch below. It used to re-join and re-parse every line
+    # *per match*; a 2.7k-line GL header has 81 `typedef struct {` occurrences,
+    # so that was 81 full passes over the file and it took minutes.
+    _san_cache: list[str] | None = None
+    # (kind, name) pairs already emitted, so a declaration matched by two rules
+    # does not produce two nodes with the same id
+    c_seen: set[tuple[str, str]] = set()
 
     for idx, raw_line in enumerate(lines, 1):
         line = _clean_line(raw_line, rule)
@@ -525,21 +699,28 @@ def index_file(
         # declarations -----------------------------------------------------
         decl_name = None
         decl_kind = None
-        for kind, pat in decl_patterns:
-            try:
-                m = pat.match(line)
-                nm = m.group("name") if m else None
-            except Exception:
-                m, nm = None, None
-            if m and nm:
-                decl_name = nm
-                decl_kind = kind
-                break
+        c_end = None
+        hit = cdecls.get(idx) if cdecls else None
+        if hit is not None:
+            decl_kind, decl_name, c_end = hit
+        else:
+            for kind, pat in decl_patterns:
+                try:
+                    m = pat.match(line)
+                    nm = m.group("name") if m else None
+                except Exception:
+                    m, nm = None, None
+                if m and nm:
+                    decl_name = nm
+                    decl_kind = kind
+                    break
         if decl_name is None and re.match(r"^\s*typedef\s+struct\s*\{", line):
             # anonymous struct: the name trails at the close (`} Point;`)
             try:
-                from .spans import _strip_to_code as _san2
-                _san = _san2("\n".join(lines)).split("\n")
+                if _san_cache is None:
+                    from .spans import _strip_to_code as _san2
+                    _san_cache = _san2("\n".join(lines)).split("\n")
+                _san = _san_cache
                 _depth = 0
                 _started = False
                 _close = None
@@ -568,11 +749,23 @@ def index_file(
             except Exception:
                 pass
         if decl_name:
-            try:
-                from .spans import block_span as _span
-                _, _end = _span(lines, idx, lang_id)
-            except Exception:
-                _end = idx
+            # one symbol per (kind, name) per file: a declaration can be matched
+            # by two paths (a `typedef struct X` and a bare `struct X`), and a
+            # duplicate node id would re-point its edges
+            _key = (decl_kind, decl_name)
+            if _key in c_seen:
+                continue
+            c_seen.add(_key)
+            if c_end and c_end > idx:
+                # the C/C++ pass already knows where the declaration ends,
+                # which matters for a multi-line prototype
+                _end = c_end
+            else:
+                try:
+                    from .spans import block_span as _span
+                    _, _end = _span(lines, idx, lang_id)
+                except Exception:
+                    _end = idx
             symbols.append(Symbol(decl_name, decl_kind, rel, idx, _end, stripped, "", lang_id))
             continue
 

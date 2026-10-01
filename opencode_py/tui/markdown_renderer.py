@@ -220,7 +220,6 @@ class MarkdownRenderer:
         """Render list items."""
         parts: list[TextType] = []
         i = 0
-        counter = 1
         while i < len(tokens):
             token = tokens[i]
             if token.type == "list_item_open":
@@ -392,17 +391,12 @@ class MarkdownRenderer:
         parts: list[TextType] = []
         rows: list[list[str]] = []
         current_row: list[str] = []
-        in_header = False
         col_count = 0
 
         i = 0
         while i < len(tokens):
             token = tokens[i]
-            if token.type == "thead_open":
-                in_header = True
-            elif token.type == "tbody_open":
-                in_header = False
-            elif token.type == "tr_open":
+            if token.type == "tr_open":
                 current_row = []
             elif token.type == "tr_close":
                 if current_row:

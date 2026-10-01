@@ -9,7 +9,6 @@ RULES (full guidance for maintainers; the sent schema is short):
 from __future__ import annotations
 
 import os
-import re
 import shutil
 import subprocess
 import threading

@@ -29,8 +29,9 @@ from textual.message import Message
 from textual.reactive import reactive
 from textual.widgets import Static
 
+from .. import errors
 from .theme import active_theme
-from .logo import OPENCODE_LOGO, opencode_logo_text
+from .logo import opencode_logo_text
 from .markdown_renderer import render_markdown
 from .diff_renderer import render_diff
 from .input_bar import SessionNavRequested
@@ -1442,11 +1443,6 @@ class MessageBubble(Static):
         self._refresh()
         self.freeze()
 
-    def update_reasoning(self, text: str) -> None:
-        self.unfreeze()
-        self._message = text
-        self._refresh()
-        self.freeze()
 
     def append_stream(self, text: str) -> None:
         """Append one streamed chunk (amortized O(1) render, not per-token)."""
@@ -1473,8 +1469,14 @@ class MessageBubble(Static):
                         self._message = (self._message or "") + text
                     else:
                         self._message = text
-                except Exception:
-                    pass
+                except Exception as exc:
+                    # The streamed chunk is dropped here, which silently
+                    # truncates the reply the user is reading.
+                    errors.error(
+                        "tui.chat_view",
+                        f"dropped {len(text)} chars of streamed reply",
+                        exc,
+                    )
             self._refresh_stream()
 
     def _refresh_stream(self) -> None:
@@ -1602,9 +1604,6 @@ class ChatView(VerticalScroll):
             except Exception:
                 pass
 
-    def welcome_empty(self) -> bool:
-        """True while the first-open banner is still visible (no messages)."""
-        return self._welcome_logo is not None
 
     # -- key routing -------------------------------------------------------
     async def on_key(self, event: Any) -> None:
@@ -1967,8 +1966,6 @@ class ChatView(VerticalScroll):
             pass
         return str(bubble.content)
 
-    def queued_count(self) -> int:
-        return len(self._queued_bubbles)
 
     def _mount_bubble(self, bubble: Any, before: Any = None) -> Any:
         self._dismiss_logo()

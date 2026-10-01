@@ -46,8 +46,6 @@ def _expand_braces(pattern: str) -> list[str]:
     return out
 
 
-def _fnmatch_any(name: str, pattern: str) -> bool:
-    return any(fnmatch.fnmatch(name, p) for p in _expand_braces(pattern))
 
 
 def _glob_matches(p: Path, base: Path, pattern: str) -> bool:
@@ -106,7 +104,6 @@ def _parse_rg_line(line: str) -> tuple[str, int, str] | None:
     as the path. rg always emits `path:line:content`, so the first ALL-DIGITS
     colon segment after the last path separator is the line number.
     """
-    path = ""
     for i, char in enumerate(line):
         if char == ":":
             rest = line[i + 1 :]
@@ -150,7 +147,6 @@ def _grep_rg(pattern: str, base: Path, include=None, *, max_results: int = MAX_R
         return None
     if proc.returncode not in (0, 1):
         return None
-    base_resolved = base.resolve()
     results = []
     for line in proc.stdout.splitlines():
         parsed = _parse_rg_line(line)

@@ -111,5 +111,3 @@ class Auth:
         return dict(self._data)
 
 
-def load_auth() -> Auth:
-    return Auth()

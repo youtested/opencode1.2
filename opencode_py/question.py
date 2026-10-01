@@ -137,6 +137,3 @@ class QuestionService:
             with self._lock:
                 self._pending.pop(request.id, None)
 
-    def list_pending(self) -> list[QuestionRequest]:
-        with self._lock:
-            return list(self._pending.values())

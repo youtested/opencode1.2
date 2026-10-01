@@ -135,13 +135,15 @@ def start_server(
         raise ValueError("server port must be between 1 and 65535")
     port = int(port)
     existing = _read_state()
+    previous = ""
     if existing:
         old_url = str(existing.get("url", ""))
         old_token = str(existing.get("token", ""))
         if old_url and _healthy(old_url, old_token):
             return existing
+        previous = old_token
         _remove_state()
-    token = token or os.environ.get("OPENCODE_SERVER_TOKEN") or secrets.token_urlsafe(32)
+    token = token or os.environ.get("OPENCODE_SERVER_TOKEN") or previous or secrets.token_urlsafe(32)
     if len(token) < 16:
         raise ValueError("server token must be at least 16 characters")
     if cors is None:

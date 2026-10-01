@@ -22,7 +22,6 @@ from ..globals import Path as GPath
 from ..globals import resolve_worktree
 from ..tools.read import _is_binary_sample
 from .registry import Tool, schema_with
-from .write import _atomic_write
 
 _LOCK = threading.Lock()
 

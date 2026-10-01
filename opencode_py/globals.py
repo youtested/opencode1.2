@@ -79,9 +79,6 @@ class Path:
     def catalog_file(cls) -> Path:
         return cls.cache / "models-catalog.json"
 
-    @classmethod
-    def truncation_dir(cls) -> Path:
-        return cls.data / "truncation"
 
 
 class Platform:
@@ -89,9 +86,6 @@ class Platform:
     def name() -> str:
         return sys.platform
 
-    @staticmethod
-    def is_windows() -> bool:
-        return sys.platform == "win32"
 
 
 GLOBAL_DIRS = [

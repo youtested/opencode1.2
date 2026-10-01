@@ -506,12 +506,6 @@ def visible_skills(permission=None) -> list[Skill]:
     skills = list_skills()
     if permission is None:
         return skills
-    try:
-        from ..permission import PermissionEngine
-
-        match = PermissionEngine.match
-    except Exception:
-        return skills
     out: list[Skill] = []
     for s in skills:
         action = "allow"

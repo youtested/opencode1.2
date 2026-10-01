@@ -10,10 +10,5 @@
       "disabled": true
     }
   },
-  "commands": {
-    "hi": {
-      "description": "say hi",
-      "prompt": "say hellow"
-    }
-  }
+  "commands": {}
 }

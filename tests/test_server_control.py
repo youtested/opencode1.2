@@ -45,6 +45,35 @@ def test_managed_server_start_status_and_stop(tmp_path, monkeypatch):
                 pass
 
 
+def test_token_survives_restart(tmp_path, monkeypatch):
+    """A dead server must not invalidate the token clients (Acode plugin) already saved."""
+    state_file = tmp_path / "server.json"
+    log_file = tmp_path / "server.log"
+    monkeypatch.setattr(server_control, "_state_path", lambda: state_file)
+    monkeypatch.setattr(server_control, "_log_path", lambda: log_file)
+    monkeypatch.delenv("OPENCODE_SERVER_TOKEN", raising=False)
+    state_file.write_text(
+        json.dumps(
+            {
+                "url": f"http://127.0.0.1:{free_port()}",
+                "token": "kept-token-1234567890",
+                "pid": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    started = None
+    try:
+        started = server_control.start_server(Path.cwd(), port=free_port())
+        assert started["token"] == "kept-token-1234567890"
+    finally:
+        if started is not None:
+            try:
+                server_control.stop_server()
+            except RuntimeError:
+                pass
+
+
 def test_stop_clears_malformed_state(tmp_path, monkeypatch):
     state_file = tmp_path / "server.json"
     state_file.write_text(json.dumps({"pid": 0}), encoding="utf-8")

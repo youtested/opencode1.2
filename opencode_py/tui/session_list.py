@@ -423,14 +423,6 @@ class SessionList(ModalScreen[str]):
         self.select_mode = False
         self._query: str = ""
 
-    def _agent_count(self, sid: str) -> int:
-        if not sid or self.on_agents is None:
-            return 0
-        try:
-            kids = self.on_agents(sid) or []
-            return len(kids)
-        except Exception:
-            return 0
 
     def _rows(self) -> list[tuple[str | None, str]]:
         """Flat, display-ready rows: (id, text). ``id`` is None for the

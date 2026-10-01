@@ -173,25 +173,6 @@ def _action_search(query: str, limit: int) -> dict:
             "metadata": {"terms": terms, "matches": len(hits), "items": shown}}
 
 
-def _resolve_session(prefix: str):
-    from ..session import load_session, list_sessions
-
-    prefix = (prefix or "").strip()
-    sessions = list_sessions()
-    exact = [s for s in sessions if s.id == prefix]
-    if exact:
-        return load_session(exact[0].id)
-    part = [s for s in sessions if s.id.startswith(prefix)]
-    if len(part) == 1:
-        return load_session(part[0].id)
-    if len(part) > 1:
-        return None
-    # fall back to title match
-    tl = prefix.lower()
-    titled = [s for s in sessions if tl and tl in (s.title or "").lower()]
-    if len(titled) == 1:
-        return load_session(titled[0].id)
-    return None
 
 
 def _action_read(prefix: str, limit_msgs: int) -> dict:
